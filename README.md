@@ -80,3 +80,11 @@ python -m datara_ml.export_dev_model
 ```
 
 Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v1`) and `artifacts/golden_parity.json`. The app bundles both until the real model replaces them. To swap in a trained model, follow "Swapping in a trained model" in the contract.
+
+## v0 Global model (interim)
+
+```bash
+python -m datara_ml.train_v0 --train data/train.csv --model-version v0-2026-11-06
+```
+
+Trains a small, untuned model on the current data, reports 5-fold **grouped-by-device** cross-validation against two naive baselines (last-24 h average, last hour), and exports `artifacts/global_xgboost.onnx`, the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). It is an interim model for the app while collection continues; the final model is trained and tuned on 14 days of data.
