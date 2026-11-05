@@ -1,2 +1,8 @@
 pandas>=2.2
 numpy>=1.26
+# B2-B5: model training and ONNX export (tested with xgboost 3.4.1, onnx 1.23.2,
+# onnxruntime 1.31.1, onnxmltools 1.16.0)
+xgboost>=2.1
+onnx>=1.17
+onnxruntime>=1.20
+onnxmltools>=1.13

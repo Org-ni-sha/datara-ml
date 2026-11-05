@@ -2,7 +2,7 @@
 
 The ML pipeline for DATAra (ROADMAP track B): cleaning the data-harvester dataset, training the Global XGBoost next-hour model, and exporting it to ONNX.
 
-Only the B1 phantom-spike repair exists so far.
+So far: the B1 phantom-spike repair and the B2 feature contract (with a placeholder model and the app's parity fixture). Training (B3) is done by the team on top of the contract.
 
 ## Setup
 
@@ -60,3 +60,23 @@ The command writes two files and prints a summary:
 > Readings recorded immediately after mobile data reconnected could contain the device's lifetime mobile counter, a known artifact of harvester versions ≤ 1.6.7. For each affected device-hour where the 30-second total exceeded 1.5 times the NetworkStatsManager total plus 5 MB, the NetworkStatsManager value was used; hours with no NetworkStatsManager record were excluded. *N* hours across *D* devices were corrected and *M* were excluded.
 
 Fill in *N*, *D* and *M* from the printed summary.
+
+## B2: feature contract
+
+[`docs/feature-contract.md`](docs/feature-contract.md) fixes the 12 inputs of the Global XGBoost next-hour model, their order, missing-value rules and the ONNX signature. The Android app reproduces them exactly. [`datara_ml/features.py`](datara_ml/features.py) is the reference implementation:
+
+```bash
+python -m datara_ml.features --hourly data/hourly_mobile.csv --usage data/usage_records.csv --out data/train.csv
+```
+
+`data/train.csv` has `device_id`, `hour_start_ms`, the 12 features and `target` (log1p next-hour mobile bytes). Split by `device_id`.
+
+**Internet speed is not a feature:** the harvester never recorded it. See the contract's "What is not a feature".
+
+## Placeholder model and parity fixture
+
+```bash
+python -m datara_ml.export_dev_model
+```
+
+Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v1`) and `artifacts/golden_parity.json`. The app bundles both until the real model replaces them. To swap in a trained model, follow "Swapping in a trained model" in the contract.
