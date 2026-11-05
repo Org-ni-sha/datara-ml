@@ -42,7 +42,7 @@ def run(usage_rows, app_rows):
 class PhantomSpikeTest(unittest.TestCase):
 
     def test_wifi_to_lte_spike_is_replaced_with_nsm(self):
-        # f05ba8ad: 27,637 MB in 30 s vs NSM 77.7 MB for the hour
+        # 27,637 MB in 30 s vs NSM 77.7 MB for the hour
         h = run(
             [usage_row("a", 0, 0, net="WIFI"), usage_row("a", 30, 27637.147722),
              usage_row("a", 60, 2.0)],
@@ -53,7 +53,7 @@ class PhantomSpikeTest(unittest.TestCase):
         self.assertAlmostEqual(h["mobile_bytes"] / MB, 77.710678, places=3)
 
     def test_none_to_lte_spike_is_replaced(self):
-        # acdf17f5: 9,549 MB after "no connection" vs NSM 118 MB
+        # 9,549 MB after "no connection" vs NSM 118 MB
         h = run(
             [usage_row("b", 0, 0, net="NONE"), usage_row("b", 30, 9549.916297)],
             [app_row("b", 600, 118.064512)],
@@ -61,7 +61,7 @@ class PhantomSpikeTest(unittest.TestCase):
         self.assertEqual(h["action"], "replace_nsm")
 
     def test_lte_to_2g_spike_is_replaced(self):
-        # be83fd1d: 692 MB on 2G vs NSM 4.2 MB
+        # 692 MB on 2G vs NSM 4.2 MB
         h = run(
             [usage_row("c", 0, 1, net="LTE"), usage_row("c", 30, 691.923682, net="2G")],
             [app_row("c", 600, 4.191466)],
@@ -69,7 +69,7 @@ class PhantomSpikeTest(unittest.TestCase):
         self.assertEqual(h["action"], "replace_nsm")
 
     def test_real_heavy_usage_below_nsm_is_kept(self):
-        # ed4c65bc: 328.5 MB reading in an hour NSM measured at 487 MB
+        # 328.5 MB reading in an hour NSM measured at 487 MB
         h = run(
             [usage_row("d", 0, 0, net="WIFI"), usage_row("d", 30, 328.501809),
              usage_row("d", 60, 150.0)],
@@ -79,7 +79,7 @@ class PhantomSpikeTest(unittest.TestCase):
         self.assertAlmostEqual(h["mobile_bytes"] / MB, 478.501809, places=3)
 
     def test_borderline_close_to_nsm_is_kept(self):
-        # 23d746a8: 55.1 MB vs NSM 51.1 MB, within 1.5x + 5 MB
+        # 55.1 MB vs NSM 51.1 MB, within 1.5x + 5 MB
         h = run(
             [usage_row("e", 0, 0, net="NONE"), usage_row("e", 30, 55.133257)],
             [app_row("e", 600, 51.110026)],
@@ -87,7 +87,7 @@ class PhantomSpikeTest(unittest.TestCase):
         self.assertEqual(h["action"], "keep")
 
     def test_spike_without_nsm_drops_the_hour(self):
-        # 23d746a8: 520 MB with no NSM record for the hour
+        # 520 MB with no NSM record for the hour
         h = run(
             [usage_row("f", 0, 0, net="WIFI"), usage_row("f", 30, 520.400712)],
             [],
@@ -119,7 +119,7 @@ class PhantomSpikeTest(unittest.TestCase):
         self.assertEqual(h["action"], "replace_nsm")
 
     def test_two_spikes_in_one_hour_replace_once(self):
-        # f05ba8ad: 1,112 and 1,118 MB in the same hour, NSM 77.4 MB
+        # 1,112 and 1,118 MB in the same hour, NSM 77.4 MB
         h = run(
             [usage_row("j", 0, 0, net="NONE"), usage_row("j", 30, 1112.024488),
              usage_row("j", 2000, 0, net="NONE"), usage_row("j", 2030, 1118.374578)],
