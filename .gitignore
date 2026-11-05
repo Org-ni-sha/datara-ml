@@ -1,0 +1,10 @@
+# Respondent data (RA 10173): never commit
+data/
+*.csv
+*.sqlite
+*.db
+
+__pycache__/
+*.pyc
+.venv/
+.ipynb_checkpoints/
