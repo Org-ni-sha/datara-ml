@@ -72,6 +72,9 @@ def metrics(y_log: np.ndarray, p_log: np.ndarray) -> dict[str, float]:
         "mae_mb": float(np.mean(np.abs(y_mb - p_mb))),
         "rmse_mb": float(math.sqrt(np.mean((y_mb - p_mb) ** 2))),
         "r2_log": 1 - ss_res / ss_tot if ss_tot > 0 else float("nan"),
+        # The PET sums predictions hour by hour: below 1 means usage is underpredicted and the PET
+        # comes out late. Squared error on log1p predicts a typical hour, not the average one.
+        "sum_pred_over_actual": float(p_mb.sum() / y_mb.sum()) if y_mb.sum() > 0 else float("nan"),
     }
 
 

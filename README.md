@@ -88,9 +88,11 @@ Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.o
 ## v0 Global model (interim)
 
 ```bash
-python -m datara_ml.train_v0 --train data/train.csv --model-version v0-nsm-2026-11-06
+python -m datara_ml.train_v0 --train data/train.csv --model-version v0-nsm-2026-11-06c
 ```
 
 Trains a small, untuned model on the current data, reports 5-fold **grouped-by-device** cross-validation against two naive baselines (last-24 h average, last hour), and exports `artifacts/global_xgboost.onnx`, the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). It is an interim model for the app while collection continues; the final model is trained and tuned on 14 days of data.
 
-The bundled `v0-nsm-2026-11-06b` (contract v2, second 2026-11-06 export): 538 hours from 15 devices; out-of-fold next-hour MAE 75.3 MB vs 77.6 MB (last hour) and 79.0 MB (24 h average). It barely beats the naive baselines, so treat it as a working placeholder, not a result.
+The bundled `v0-nsm-2026-11-06c` (contract v3, second 2026-11-06 export): 689 hours from 17 devices; out-of-fold next-hour MAE 59.1 MB vs 62.3 MB (last hour) and 65.8 MB (24 h average).
+
+**Known problem: v0 underpredicts total usage.** Its predictions add up to only 43% of actual usage (`sum_pred_over_actual` in `v0_report.json`), while both baselines are close to 100%. Squared error on log1p bytes predicts a typical hour, not the average one, and the PET sums predicted hours, so v0's PETs come out late. A mean-predicting objective (for example Tweedie on bytes) reached 69% in a quick test. Choose the training objective before the final model; ROADMAP Decision 2 currently says log1p.

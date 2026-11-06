@@ -9,8 +9,9 @@ Rule (reproduced by the app's ``HourlyUsage`` from ``durable_readings``):
   (uid -5, tethered traffic) and other negative uids, so the total matches the device-level NSM
   query the phone uses (``querySummaryForDevice``, which also counts every uid).
 * A window is **usable** when its status is in ``USABLE_STATUSES`` and it is at most
-  ``MAX_WINDOW_MS`` (2 h) long. Its bytes are spread evenly over its span and summed per clock
-  hour.
+  ``MAX_WINDOW_MS`` (2 h) long, **or it has 0 mobile bytes** (contract v3): Android measured
+  zero over the whole window, so every hour inside it is a measured zero whatever its length.
+  Its bytes are spread evenly over its span and summed per clock hour.
 * An hour is **observed** only when (1) every window touching it is usable, (2) those windows do
   not overlap, and (3) together they cover the hour, missing at most ``COVERAGE_TOLERANCE_MS``.
   Otherwise its bytes are unknown (missing for lags, excluded as a target). A measured 0 is
@@ -51,7 +52,11 @@ class Window:
 
     @property
     def usable(self) -> bool:
-        return self.status in USABLE_STATUSES and 0 < self.end_ms - self.start_ms <= MAX_WINDOW_MS
+        span = self.end_ms - self.start_ms
+        if self.status not in USABLE_STATUSES or span <= 0:
+            return False
+        # A zero-byte window is exact at any length: there is nothing to place in hours
+        return span <= MAX_WINDOW_MS or self.mobile_bytes == 0
 
 
 def hourly_from_windows(windows: Iterable[Window]) -> dict[int, float]:
