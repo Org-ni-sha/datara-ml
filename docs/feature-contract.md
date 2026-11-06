@@ -106,7 +106,7 @@ The app has no model-specific code: a model trained on this contract drops in as
    then copy `artifacts/golden_parity.json` to `datara-android/app/src/test/resources/forecast/golden_parity.json`.
 6. Run `gradlew test assembleDebug` in the app. No Kotlin change is needed unless the contract version changes.
 
-`python -m datara_ml.train_v0 --train data/train.csv --model-version <name>` does steps 2, 3 and 5 in one go: Tweedie with nested grouped-by-device tuning (`--objective log1p_smear` for the fallback).
+`python -m datara_ml.train_v0 --train data/train.csv --apps data/app_usage_records.csv --usage data/usage_records.csv --model-version <name>` does steps 2, 3 and 5 in one go: Tweedie with nested grouped-by-device tuning, hyperparameters chosen by PET error on B4's simulated quota cycles (`--objective log1p_smear` for the fallback).
 
 ## The placeholder model
 
