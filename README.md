@@ -89,16 +89,19 @@ Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.o
 
 ```bash
 python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
-python -m datara_ml.train_v0 --train data/train.csv --model-version final-2026-11-11
+python -m datara_ml.train_v0 --train data/train.csv --apps data/app_usage_records.csv --usage data/usage_records.csv --model-version final-2026-11-11
 ```
 
-Trains with the **Tweedie objective on raw next-hour bytes** (it predicts the mean usage of an hour), tunes `tweedie_variance_power`, `max_depth` and `n_estimators` by **nested** 5-fold cross-validation grouped by device (the reported scores were never used for tuning), compares it with two naive baselines on the same rows, and exports `artifacts/global_xgboost.onnx` (`output_transform = identity`), the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). `--objective log1p_smear` trains the fallback: squared error on log1p with one smearing factor. Takes about a minute.
+Trains with the **Tweedie objective on raw next-hour bytes** (it predicts the mean usage of an hour), tunes `tweedie_variance_power`, `max_depth` and `n_estimators` by **nested** 5-fold cross-validation grouped by device (the reported scores were never used for tuning), choosing by **PET error** on B4's simulated quota cycles (see "B4/E3 evaluation"; next-hour RMSE only if `--apps`/`--usage` are left out), compares it with two naive baselines on the same rows, and exports `artifacts/global_xgboost.onnx` (`output_transform = identity`), the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). `--objective log1p_smear` trains the fallback: squared error on log1p with one smearing factor. Takes about 2 minutes.
 
-The bundled `v0-tweedie-2026-11-06` (contract v4, second 2026-11-06 export, 689 hours from 17 devices; tuned power 1.9, depth 2, 150 trees):
+**Why PET error picks the hyperparameters (decided 2026-11-07):** the PET projection feeds each predicted hour back as the next hours' lags. Chosen by next-hour RMSE, the model had power 1.9, which settles on about 0 MB/h for some devices, usually after a run of measured-zero Wi-Fi hours. Its PETs then landed "beyond 30 days": 186 of 1,367 simulated cycles, and a PET MAE of 101 h, worse than repeating the 24 h average (47 h). Chosen by PET error, the model has power 1.3. None of its PETs land beyond 30 days, and its PET MAE is 14 h, with next-hour error unchanged.
+
+The bundled `v0-tweedie-pet-2026-11-07` (contract v4, second 2026-11-06 export, 689 hours from 17 devices; chosen power 1.3, depth 2, 150 trees):
 
 | Next hour, 17 devices held out | MAE (MB) | RMSE (MB) | Predicted ÷ actual total | Typical day-total error |
 |---|---|---|---|---|
-| **Tweedie** (`v0-tweedie-2026-11-06`) | **59.8** | **113.2** | **0.79** | 42% |
+| **Tweedie, PET-selected** (`v0-tweedie-pet-2026-11-07`) | **59.8** | **111.4** | **0.81** | 46% |
+| Tweedie, RMSE-selected (`v0-tweedie-2026-11-06`) | 59.8 | 113.2 | 0.79 | 42% |
 | log1p + smearing (fallback) | 63.1 | 119.8 | 0.82 | 51% |
 | log1p, squared error (previous v0) | 59.1 | 120.3 | 0.43 | 68% |
 | Baseline: last hour | 62.3 | 124.8 | 0.99 | 8% |
@@ -123,13 +126,25 @@ Run it for the Nov 11 final model, **after** the two training commands above (sa
 
 ```bash
 python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
-python -m datara_ml.train_v0 --train data/train.csv --model-version final-2026-11-11
+python -m datara_ml.train_v0 --train data/train.csv --apps data/app_usage_records.csv --usage data/usage_records.csv --model-version final-2026-11-11
 python -m datara_ml.evaluate --apps data/app_usage_records.csv --usage data/usage_records.csv --train data/train.csv
 ```
 
-It takes about 2 minutes and writes to `artifacts/eval/`: `report.json` (every number), `report.md` (the Chapter 4 tables) and the figures `next_hour_error.png`, `pet_mae_by_quota.png`, `pet_signed_error.png`, `pet_projected_vs_actual.png` and `feature_importance.png`. Devices appear only as D01, D02, … (in order of their first hour), so these files may be committed. `--train` only checks that `data/train.csv` was built from the same exports. For a quick run without tuning, pass `--fixed-params '{"tweedie_variance_power": 1.9, "max_depth": 2, "n_estimators": 150}'`.
+Training takes about 2 minutes and the evaluation about 5 (more with more data). Hyperparameters are chosen by PET error in both, with every 3rd start hour scored (`PET_TUNE_STRIDE`). The evaluation writes to `artifacts/eval/`: `report.json` (every number), `report.md` (the Chapter 4 tables) and the figures `next_hour_error.png`, `pet_mae_by_quota.png`, `pet_signed_error.png`, `pet_projected_vs_actual.png` and `feature_importance.png`. Devices appear only as D01, D02, … (in order of their first hour), so these files may be committed. `--train` only checks that `data/train.csv` was built from the same exports. For a quick run without tuning, pass `--fixed-params '{"tweedie_variance_power": 1.9, "max_depth": 2, "n_estimators": 150}'`.
 
-**Preliminary result (second 2026-11-06 export, 689 hours, 17 devices; `artifacts/eval/`).** Next hour, the model matches `train_v0` (MAE 59.8 MB vs 62.3 for the last hour and 65.8 for the 24 h average). PET over 1,367 scored cycles from 13 devices: Global MAE 28.4 h (median 4.8 h, 79% within ±24 h, bias +3.2 h) vs 47.1 h for the 24 h average repeated and 246 h for the last hour repeated. Two caveats belong in Chapter 4:
+**Preliminary result (second 2026-11-06 export, 689 hours, 17 devices; `artifacts/eval/`).** PET error is over 1,367 scored cycles from 13 devices (all quotas). Positive bias means late.
 
-- **The PET depends on the Tweedie power.** With the shipped hyperparameters (power 1.9) fixed in every fold, the PET MAE is 101 h, worse than the 24 h average (47 h), although its median (5.0 h) is still the best. The cause is the projection: predicted hours become the next hours' lags, and the model settles on a fixed rate. For some devices that rate is about 0 MB/h, usually after a run of measured-zero Wi-Fi hours, so the PET is "beyond 30 days" (186 of 1,367 cycles at power 1.9, 28 with the per-fold choices). The model was tuned on next-hour RMSE, which does not see this.
-- **E3 cannot be shown yet.** No device has 168 measured hours, so the switch to Local never happens. In shadow, where the local layer was ready (≥ 24 learned hours, 9 devices), it did not beat Global: next-hour MAE 59.0 vs 51.8 MB and PET MAE 39.3 vs 38.6 h on the same rows. The new collection (from about 2026-10-30) should give some devices a full week.
+| | Next-hour MAE (MB) | PET MAE (h) | Median (h) | Within ±24 h | Bias (h) | Beyond 30 d |
+|---|---|---|---|---|---|---|
+| **Shipped model** (power 1.3, PET-selected), fixed in every fold | 58.8 | **13.8** | 4.2 | 81% | −10.9 | 0 |
+| PET selection, nested (each fold tunes its own) | 59.7 | 15.6 | 4.7 | 78% | −9.8 | 0 |
+| Before: RMSE selection, nested | 59.8 | 28.4 | 4.8 | 79% | +3.2 | 28 |
+| Before: shipped power 1.9 (RMSE-selected), fixed in every fold | 56.2 | 101.1 | 5.0 | 74% | +87.5 | 186 |
+| Baseline: average of last 24 h, repeated | 65.8 | 47.1 | 6.7 | 72% | +35.0 | 50 |
+| Baseline: last hour, repeated | 62.3 | 246.4 | 22.7 | 51% | +239.6 | 450 |
+
+Read the table with these in mind:
+
+- **Use the nested row (15.6 h) as the unbiased number.** The shipped settings were chosen on the same devices they are scored on, so 13.8 h is slightly optimistic.
+- **The PET-selected model errs early:** on average its PET comes about 10 h before the real one, and more for big quotas (−42 h at 3 GB). Early is the safer direction for a warning, but the error still grows with the quota (MAE 3 h at 100 MB, 50 h at 3 GB).
+- **E3 cannot be shown yet.** No device has 168 measured hours, so the switch to Local never happens. Where the local layer was ready (≥ 24 learned hours, 9 devices), it ran in the background. Compared with Global on the same rows, it was worse one hour ahead (MAE 57.7 vs 50.4 MB) and about equal on PET (MAE 17.6 vs 18.2 h). The new collection (from about 2026-10-30) should give some devices a full week.

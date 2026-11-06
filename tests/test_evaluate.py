@@ -78,6 +78,28 @@ class ProjectionTest(unittest.TestCase):
         for q in (0.0, 1.0, 2.5e6, 40e6, 777e6, 5e9):
             self.assertEqual(ev.reach_from_trajectory(bs, start, q), project(hist, start, q, predict).reach_at_ms, q)
 
+    def test_batched_trajectories_match_project(self):
+        histories = device_histories(synthetic_hourly(devices=3, hours=24 * 5))
+
+        def one(x):
+            return 2e6 + 0.7 * math.expm1(x[5]) if not math.isnan(x[5]) else 1e6 * (1 + x[0])
+
+        jobs = [(h, max(h) - k * HOUR_MS, q) for h in histories.values() for k, q in ((0, 30e6), (5, 400e6), (9, 0.0))]
+        batched = ev.batch_trajectories(jobs, lambda xs: np.array([one(x) for x in xs]))
+        for (h, start, q), bs in zip(jobs, batched):
+            self.assertEqual(bs, ev.trajectory(h, start, q, one))
+            self.assertEqual(ev.reach_from_trajectory(bs, start, q), project(h, start, q, one).reach_at_ms)
+
+    def test_pet_context_errors_are_signed_hours(self):
+        hist = hist_of({k: 10e6 for k in range(48)})
+        known = {h: s.mobile_bytes for h, s in hist.items()}
+        hourly = pd.DataFrame({"device_id": "a", "hour_start_ms": sorted(hist)})
+        ctx = ev.pet_context(hourly.assign(mobile_bytes=10e6, readings=0, cellular_readings=0, signal_dbm=np.nan,
+                                           radio_2g=0, radio_3g=0, radio_lte=0, radio_5g=0), {"a": known}, (50,))
+        late = ctx.errors(lambda xs: np.full(len(xs), 5e6), ["a"])  # half the real rate: 5 h late
+        self.assertTrue(len(late) > 0)
+        self.assertTrue(np.allclose(late, 5.0))
+
     def test_never_reaching_is_beyond_the_horizon(self):
         bs = ev.trajectory(hist_of({0: 0.0}), T0 + HOUR_MS, 1e6, lambda x: 0.0)
         self.assertEqual(len(bs), PROJECTION_HORIZON_HOURS)
@@ -185,6 +207,20 @@ class EvaluateEndToEndTest(unittest.TestCase):
             self.assertNotIn("secret-", text)
             self.assertIn("D01", text)
             json.loads((Path(tmp) / "report.json").read_text(encoding="utf-8"))
+
+    def test_tuning_by_pet_picks_a_grid_point(self):
+        import datara_ml.train_v0 as tv
+        saved = tv.TWEEDIE_GRID
+        tv.TWEEDIE_GRID = {"tweedie_variance_power": [1.2, 1.8], "max_depth": [2], "n_estimators": [30]}
+        try:
+            known = {d: dict(zip(g["hour_start_ms"].astype(int), g["mobile_bytes"].astype(float)))
+                     for d, g in self.hourly.dropna(subset=["mobile_bytes"]).groupby("device_id")}
+            train = ev.build_training_set(self.hourly)
+            train[ev.FEATURES] = train[ev.FEATURES].astype(np.float32)
+            chosen = tv.tune(train, "tweedie", pet=ev.pet_context(self.hourly, known, (50, 300)))
+            self.assertIn(chosen, tv.grid())
+        finally:
+            tv.TWEEDIE_GRID = saved
 
     def test_importance_covers_every_feature(self):
         self.assertEqual(len(self.report["importance"]["gain_share"]), 12)

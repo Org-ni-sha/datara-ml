@@ -74,8 +74,8 @@ import pandas as pd
 
 from datara_ml import train_v0 as tv
 from datara_ml.features import (
-    FEATURES, HOUR_MS, MIN_OBSERVED_LAST_24H, PH_OFFSET_MS, PROJECTION_HORIZON_HOURS, History,
-    build_training_set, device_histories, feature_vector, observed_last_24h, project,
+    FEATURES, HOUR_MS, MIN_OBSERVED_LAST_24H, PH_OFFSET_MS, PROJECTION_HORIZON_HOURS, History, HourStats,
+    build_training_set, device_histories, feature_vector, observed_last_24h, pooled_network, project,
 )
 from datara_ml.nsm_hourly import Window, _hour_bytes
 
@@ -182,6 +182,40 @@ def trajectory(history: History, start_ms: int, max_quota_bytes: float,
 
     project(history, start_ms, max_quota_bytes, recording, offset_ms)
     return seen
+
+
+def batch_trajectories(jobs: list[tuple[History, int, float]], predict_batch: Callable[[np.ndarray], np.ndarray],
+                       offset_ms: int = PH_OFFSET_MS,
+                       horizon_hours: int = PROJECTION_HORIZON_HOURS) -> list[list[float]]:
+    """:func:`trajectory` for many ``(history, start_ms, max_quota_bytes)`` jobs at once: the same
+    steps as ``features.project()`` (checked by a test), with one model call per hour step for all
+    projections still running. Used to tune by PET error in reasonable time."""
+    n = len(jobs)
+    hists = [dict(h) for h, _, _ in jobs]
+    pooled = [pooled_network(h, s) for h, s, _ in jobs]
+    cumulative = [0.0] * n
+    out: list[list[float]] = [[] for _ in range(n)]
+    active = [i for i in range(n)]
+    for k in range(horizon_hours):
+        if not active:
+            break
+        x = np.stack([feature_vector(hists[i], jobs[i][1] + k * HOUR_MS, offset_ms, None if k == 0 else pooled[i])
+                      for i in active])
+        preds = np.asarray(predict_batch(x), float).reshape(-1)
+        still = []
+        for i, p in zip(active, preds):
+            b = max(0.0, float(p))
+            out[i].append(b)
+            remaining = jobs[i][2]
+            if k == 0 and remaining <= 0:
+                continue
+            if b > 0 and cumulative[i] + b >= remaining:
+                continue
+            cumulative[i] += b
+            hists[i][jobs[i][1] + k * HOUR_MS] = HourStats(mobile_bytes=b)
+            still.append(i)
+        active = still
+    return out
 
 
 def reach_from_trajectory(bs: list[float], start_ms: int, quota_bytes: float,
@@ -456,11 +490,75 @@ def booster_predictor(model) -> Callable[[np.ndarray], float]:
     return lambda x: float(booster.inplace_predict(np.asarray(x, np.float32).reshape(1, -1))[0])
 
 
+def booster_batch_predictor(model) -> Callable[[np.ndarray], np.ndarray]:
+    booster = model.model.get_booster()
+    return lambda x: booster.inplace_predict(np.asarray(x, np.float32)).astype(np.float64)
+
+
 def device_labels(hourly: pd.DataFrame) -> dict[str, str]:
     """Anonymous labels D01, D02, … in order of each device's first hour (then id)."""
     first = hourly.groupby("device_id")["hour_start_ms"].min().reset_index()
     first = first.sort_values(["hour_start_ms", "device_id"])
     return {d: f"D{i + 1:02d}" for i, d in enumerate(first["device_id"])}
+
+
+@dataclass
+class PetContext:
+    """What PET scoring needs per device, with the actual crossings cached (they do not depend on
+    the model). Used by :func:`evaluate` and by ``train_v0.tune`` to select hyperparameters by PET
+    error."""
+    histories: dict[str, dict[int, HourStats]]
+    known: dict[str, dict[int, float]]
+    last_hour: dict[str, int]
+    starts: dict[str, list[int]]
+    quotas: list[float]
+    offset_ms: int = PH_OFFSET_MS
+    _cache: dict = field(default_factory=dict)
+
+    def crossings(self, device: str, start_ms: int) -> dict[float, Crossing]:
+        key = (device, start_ms)
+        if key not in self._cache:
+            self._cache[key] = {q: actual_crossing(self.histories[device], self.known.get(device, {}), start_ms, q,
+                                                   self.last_hour[device]) for q in self.quotas}
+        return self._cache[key]
+
+    def errors(self, predict_batch: Callable[[np.ndarray], np.ndarray], devices, stride: int = 1) -> np.ndarray:
+        """Signed PET errors (hours, + = late) of a model projected from every ``stride``-th start
+        hour of ``devices``, over every quota whose crossing is scored (as in :func:`evaluate`).
+        ``predict_batch`` maps an ``[n, 12]`` float32 array to n byte predictions; the projections
+        run in lockstep (:func:`batch_trajectories`) so the model is called once per hour step."""
+        jobs, targets = [], []
+        for device in devices:
+            hist = self.histories.get(device)
+            if hist is None:
+                continue
+            for start in self.starts.get(device, [])[::stride]:
+                scored = [(q, c.reach_ms) for q, c in self.crossings(device, start).items() if c.status == "crossed"]
+                if scored:
+                    jobs.append((hist, start, max(q for q, _ in scored)))
+                    targets.append(scored)
+        out = []
+        for (hist, start, _), scored, bs in zip(jobs, targets, batch_trajectories(jobs, predict_batch, self.offset_ms)):
+            for q, actual in scored:
+                reach = reach_from_trajectory(bs, start, q)
+                if reach is None:
+                    reach = start + PROJECTION_HORIZON_HOURS * HOUR_MS
+                out.append((reach - actual) / HOUR_MS)
+        return np.asarray(out, float)
+
+
+def pet_context(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb=QUOTAS_MB,
+                offset_ms: int = PH_OFFSET_MS) -> PetContext:
+    """Start hours are the training rows (observed, >= 6 observed of the previous 24); the data of a
+    device ends at its last hour with a known NSM total."""
+    histories = device_histories(hourly)
+    span_max = hourly.groupby("device_id")["hour_start_ms"].max()
+    last_hour, starts = {}, {}
+    for device, hist in histories.items():
+        k = known.get(device, {})
+        last_hour[device] = max(k) if k else int(span_max[device])
+        starts[device] = [h for h in sorted(hist) if observed_last_24h(hist, h) >= MIN_OBSERVED_LAST_24H]
+    return PetContext(histories, known, last_hour, starts, [q * 1e6 for q in quotas_mb], offset_ms)
 
 
 def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb=QUOTAS_MB,
@@ -479,11 +577,12 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
     quotas = [q * 1e6 for q in quotas_mb]
     max_q = max(quotas)
     devices = train["device_id"].to_numpy()
+    ctx = pet_context(hourly, known, quotas_mb, offset_ms)
 
     row_records, cycle_records, skipped, device_rows, params_per_fold = [], [], [], [], []
     for fold, held in enumerate(tv.device_folds(devices, k=min(folds, len(set(devices))))):
         te = np.isin(devices, held)
-        params = fixed_params if fixed_params is not None else tv.tune(train[~te], "tweedie")
+        params = fixed_params if fixed_params is not None else tv.tune(train[~te], "tweedie", pet=ctx)
         params_per_fold.append(params)
         x, y = tv._xy(train[~te])
         model = tv.TweedieModel(**params).fit(x, y)
@@ -500,9 +599,6 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
                 "local_ready_hours": sum(r.local_bytes is not None for r in runs),
                 "local_active_hours": switched_hours,
             })
-            dev_known = known.get(device, {})
-            # the data ends at the last hour with a known NSM total (a half-read final hour is not a gap)
-            last_hour = max(dev_known) if dev_known else int(span.loc[device, "max"])
             for r in runs:
                 if r.hour_ms not in hist:
                     continue  # the app predicted, but the hour was never measured: not scorable
@@ -517,8 +613,7 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
                     rec[name] = baseline_bytes(name, xs)
                 row_records.append(rec)
 
-                crossings = {q: actual_crossing(hist, dev_known, r.hour_ms, q, last_hour)
-                             for q in quotas}
+                crossings = ctx.crossings(device, r.hour_ms)
                 for q, c in crossings.items():
                     if c.status != "crossed":
                         skipped.append({"quota_mb": q / 1e6, "reason": c.status})
@@ -634,11 +729,14 @@ def sensitivity(fixed_report: dict, params: dict) -> dict:
 
 
 def final_model_importance(hourly: pd.DataFrame, fixed_params: dict | None = None,
+                           known: dict[str, dict[int, float]] | None = None,
                            offset_ms: int = PH_OFFSET_MS) -> dict:
-    """Gain importance of the model ``train_v0`` would ship: tuned and fitted on every device."""
+    """Gain importance of the model ``train_v0`` would ship: tuned (by PET error when ``known`` is
+    given, as ``train_v0`` does) and fitted on every device."""
     train = build_training_set(hourly, offset_ms)
     train[FEATURES] = train[FEATURES].astype(np.float32)
-    params = fixed_params if fixed_params is not None else tv.tune(train, "tweedie")
+    pet = pet_context(hourly, known, offset_ms=offset_ms) if known is not None else None
+    params = fixed_params if fixed_params is not None else tv.tune(train, "tweedie", pet=pet)
     x, y = tv._xy(train)
     model = tv.TweedieModel(**params).fit(x, y)
     gain = model.model.get_booster().get_score(importance_type="gain")
@@ -906,7 +1004,7 @@ def main(argv: list[str] | None = None) -> int:
     fixed = json.loads(args.fixed_params) if args.fixed_params else None
     quotas = tuple(int(q) for q in args.quotas_mb.split(","))
     report = evaluate(hourly, known, quotas, fixed, progress=print)
-    report["importance"] = final_model_importance(hourly, fixed)
+    report["importance"] = final_model_importance(hourly, fixed, known)
     if fixed is None and not args.no_sensitivity:
         # The model that ships is tuned on every device; nested CV mixes the folds' choices. Score
         # the shipped hyperparameters in every fold too, since the PET can depend on them.

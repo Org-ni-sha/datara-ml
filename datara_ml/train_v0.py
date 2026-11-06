@@ -9,15 +9,19 @@ smearing factor (total actual / total predicted bytes on the training rows).
 Evaluation is **grouped by device** (respondent): whole devices are held out (ROADMAP B3).
 Hyperparameters are tuned by **nested** cross-validation: inside each outer fold, a small grid is
 scored with inner device folds on the training devices only, so the reported out-of-fold numbers
-were never used for tuning. The grid is chosen by RMSE in bytes, which a mean predictor should
-minimise. Every model is compared on the same rows with two naive baselines:
+were never used for tuning. Since 2026-11-07 the grid is chosen by **PET error** (MAE in hours on
+B4's simulated quota cycles, ``evaluate.PetContext``) when ``--apps``/``--usage`` are given: the
+PET projection feeds predicted hours back as lags, and some settings that score well one hour ahead
+settle on about 0 MB/h there, so their PETs land beyond 30 days. Without the raw exports it falls
+back to next-hour RMSE in bytes. Every model is compared on the same rows with two naive baselines:
 
 * ``last_hour``:    next hour = last hour's usage (falls back to the 24 h average)
 * ``last_24h_avg``: next hour = average hourly usage over the last 24 h
 
 Usage (the final model on Nov 11 is the same command with a new version)::
 
-    python -m datara_ml.train_v0 --train data/train.csv --model-version v0-tweedie-2026-11-07
+    python -m datara_ml.train_v0 --train data/train.csv --apps data/app_usage_records.csv \
+        --usage data/usage_records.csv --model-version final-2026-11-11
 
 Writes ``artifacts/global_xgboost.onnx`` (``output_transform`` metadata: ``identity`` for Tweedie,
 ``expm1`` + ``output_scale`` for the fallback), ``artifacts/golden_parity.json`` and
@@ -39,19 +43,22 @@ import pandas as pd
 from datara_ml.export_dev_model import (
     OnnxPredictor, check_parity, export_onnx, fixture_history, golden_cases, write_fixture,
 )
-from datara_ml.features import FEATURES, HOUR_MS, PH_OFFSET_MS
+from datara_ml.features import FEATURES, HOUR_MS, PH_OFFSET_MS, build_training_set
 
 BASE = dict(subsample=0.8, colsample_bytree=0.8, min_child_weight=5, reg_lambda=5.0,
             random_state=0, n_jobs=1, tree_method="hist")
 TWEEDIE_GRID = {
     "tweedie_variance_power": [1.1, 1.3, 1.5, 1.7, 1.9],
-    "max_depth": [2, 3, 4],
+    "max_depth": [2, 3],
     "n_estimators": [150, 300],
 }
 LOG1P_PARAMS = dict(n_estimators=150, max_depth=3, learning_rate=0.05, **BASE)
 LEARNING_RATE = 0.05
 FOLDS = 5
 INNER_FOLDS = 4
+# Tuning by PET scores every PET_TUNE_STRIDE-th start hour (consecutive start hours give nearly the
+# same cycle), to keep the search to a few minutes.
+PET_TUNE_STRIDE = 3
 
 
 def device_folds(devices: np.ndarray, k: int = FOLDS, seed: int = 0) -> list[np.ndarray]:
@@ -150,36 +157,52 @@ def grid() -> list[dict]:
     return [dict(zip(keys, values)) for values in itertools.product(*TWEEDIE_GRID.values())]
 
 
-def tune(train: pd.DataFrame, objective: str) -> dict:
-    """Best grid point by RMSE (bytes) over inner device folds of ``train``."""
+def tune(train: pd.DataFrame, objective: str, pet=None, stride: int | None = None) -> dict:
+    """Best grid point over inner device folds of ``train``.
+
+    With ``pet`` (an ``evaluate.PetContext``): by **PET error**, the MAE in hours of the projected
+    PET on the simulated quota cycles of the inner held-out devices (B4's scoring, every
+    ``stride``-th start hour); ties go to the lower next-hour RMSE. Without it: by next-hour RMSE
+    in bytes (the pre-2026-11-07 rule).
+    """
     if objective != "tweedie":
         return {}
+    stride = PET_TUNE_STRIDE if stride is None else stride
     devices = train["device_id"].to_numpy()
     folds = device_folds(devices, k=min(INNER_FOLDS, len(set(devices))), seed=1)
-    best, best_rmse = None, float("inf")
+    best, best_score = None, (float("inf"), float("inf"))
     for params in grid():
-        sq, n = 0.0, 0
+        sq, n, pet_errors = 0.0, 0, []
         for held in folds:
             te = np.isin(devices, held)
             x, y = _xy(train[~te])
             xt, yt = _xy(train[te])
-            p = make(objective, **params).fit(x, y).predict_bytes(xt)
+            model = make(objective, **params).fit(x, y)
+            p = model.predict_bytes(xt)
             sq += float(np.sum((yt - p) ** 2))
             n += len(yt)
+            if pet is not None:
+                booster = model.model.get_booster()
+                pet_errors.append(pet.errors(
+                    lambda v, b=booster: b.inplace_predict(np.asarray(v, np.float32)).astype(np.float64),
+                    sorted(held), stride))
         rmse = math.sqrt(sq / n)
-        if rmse < best_rmse:
-            best, best_rmse = params, rmse
+        errors = np.concatenate(pet_errors) if pet_errors else np.array([])
+        score = (float(np.mean(np.abs(errors))) if len(errors) else float("inf"), rmse) if pet is not None             else (rmse, 0.0)
+        if score < best_score:
+            best, best_score = params, score
     return best
 
 
-def cross_validate(train: pd.DataFrame, objective: str = "tweedie") -> dict:
-    """Nested grouped CV: out-of-fold byte predictions with tuning inside each outer fold."""
+def cross_validate(train: pd.DataFrame, objective: str = "tweedie", pet=None) -> dict:
+    """Nested grouped CV: out-of-fold byte predictions with tuning inside each outer fold (by PET
+    error when ``pet`` is given, see :func:`tune`)."""
     oof = np.full(len(train), np.nan)
     devices = train["device_id"].to_numpy()
     chosen = []
     for held_out in device_folds(devices):
         te = np.isin(devices, held_out)
-        params = tune(train[~te], objective)
+        params = tune(train[~te], objective, pet=pet)
         chosen.append(params)
         x, y = _xy(train[~te])
         oof[te] = make(objective, **params).fit(x, y).predict_bytes(train.loc[te, FEATURES].to_numpy(np.float32))
@@ -197,14 +220,32 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--model-version", required=True, help="e.g. v0-tweedie-2026-11-07")
     p.add_argument("--objective", choices=["tweedie", "log1p_smear"], default="tweedie")
     p.add_argument("--out", default="artifacts", help="output folder")
+    p.add_argument("--apps", help="app_usage_records export: with --usage, hyperparameters are chosen by "
+                   "PET error on simulated quota cycles (B4); without them, by next-hour RMSE")
+    p.add_argument("--usage", help="usage_records export (see --apps)")
     args = p.parse_args(argv)
     out = Path(args.out)
 
     train = pd.read_csv(args.train)
     train[FEATURES] = train[FEATURES].astype(np.float32)
-    cv = cross_validate(train, args.objective)
+    pet = None
+    if args.apps and args.usage and args.objective == "tweedie":
+        from datara_ml.evaluate import load, pet_context
+        hourly, known = load(args.apps, args.usage)
+        rebuilt = build_training_set(hourly)
+        if len(rebuilt) != len(train) or not (rebuilt[["device_id", "hour_start_ms"]].to_numpy()
+                                              == train[["device_id", "hour_start_ms"]].to_numpy()).all():
+            print(f"error: {args.train} does not match the training set built from --apps/--usage; "
+                  "rerun datara_ml.features first", file=sys.stderr)
+            return 2
+        pet = pet_context(hourly, known)
+    elif args.objective == "tweedie":
+        print("warning: no --apps/--usage, so hyperparameters are chosen by next-hour RMSE, not PET error",
+              file=sys.stderr)
+    selection = "pet_mae" if pet is not None else "rmse" if args.objective == "tweedie" else "fixed"
+    cv = cross_validate(train, args.objective, pet=pet)
 
-    params = tune(train, args.objective)
+    params = tune(train, args.objective, pet=pet)
     x, y = _xy(train)
     model = make(args.objective, **params).fit(x, y)
     onnx_path = out / "global_xgboost.onnx"
@@ -226,6 +267,7 @@ def main(argv: list[str] | None = None) -> int:
         "hours_from": int(train["hour_start_ms"].min()),
         "hours_to": int(train["hour_start_ms"].max()),
         "cv": f"{FOLDS}-fold grouped by device, tuning nested in {INNER_FOLDS} inner device folds",
+        "selection": selection,
         "params": {**BASE, "learning_rate": LEARNING_RATE, **params} if args.objective == "tweedie" else LOG1P_PARAMS,
         "metrics": cv,
         "gain_importance": importance,
