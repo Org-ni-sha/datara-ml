@@ -1,4 +1,6 @@
-# Feature contract v3: Global XGBoost next-hour model
+# Feature contract v4: Global XGBoost next-hour model
+
+**v4 (2026-11-06):** the model predicts the **expected bytes** of the next hour (Tweedie objective), and its output becomes bytes through two metadata props, `output_transform` and `output_scale`, which the app now requires. The 12 features and the hour rules are unchanged from v3. Why: the log1p model's predictions summed to only 43% of real usage, so PETs came out late.
 
 **v3 (2026-11-06):** an NSM window with **0 mobile bytes** is usable at any length: Android measured zero over the whole window, so every hour inside it is a measured zero (it was wrongly treated as unknown in v2). It adds 151 training rows and 2 devices. See [measurement gaps](measurement-gaps.md), "Which hours count".
 
@@ -16,9 +18,9 @@ This is the fixed interface between training (this repo, B2–B5) and the Androi
 |---|---|
 | ONNX input | name `features`, `tensor(float32)`, shape `[batch, 12]`. The phone always sends `[1, 12]`. |
 | ONNX output | name `variable`, `tensor(float32)`, shape `[batch, 1]` |
-| Output meaning | predicted `log1p(mobile bytes in the next hour)`. The app uses `max(0, expm1(output))`. |
+| Output meaning | next-hour bytes = `max(0, output_scale × f(output))`, with `f` given by `output_transform`: **`identity`** for the Tweedie model (onnxmltools exports `exp(margin) × base_score`, so the output is already the expected bytes) or **`expm1`** for a log1p model (fallback; `output_scale` then holds a smearing factor). The app refuses an unknown transform. |
 | Missing values | `NaN` in the input. XGBoost learns a default branch for missing values, and the ONNX `TreeEnsembleRegressor` from onnxmltools follows it (`nodes_missing_value_tracks_true`). Tested: ONNX matches XGBoost within 1e-4 on rows with NaN, including an all-NaN row. |
-| Metadata props | `contract_version` (`3`), `model_version` (logged in every `forecasts.model_version`), `feature_names` (comma-separated, the order below). The app refuses a model whose `contract_version` or feature count does not match. |
+| Metadata props | `contract_version` (`4`), `model_version` (logged in every `forecasts.model_version`), `feature_names` (comma-separated, the order below), `output_transform`, `output_scale`. The app refuses a model whose `contract_version` or feature count does not match. |
 | Opset | `ai.onnx` 15 / `ai.onnx.ml` 3; runs on ONNX Runtime 1.31 (Python and Android). |
 
 ## Definitions used by every feature
@@ -56,7 +58,7 @@ Averages are of bytes, then `log1p` (not the mean of logs).
 
 ## Target
 
-`log1p(mobile bytes of hour t)`, for observed hours only. Training rows also require **at least 6 observed hours among `t − 1h … t − 24h`** (`MIN_OBSERVED_LAST_24H`), the same rule the phone uses before it shows a forecast ("collecting" until then). Split train/test by `device_id`, never by row.
+`target` in the training set is `log1p(mobile bytes of hour t)`, for observed hours only; the Tweedie model is trained on `expm1(target)`, the raw bytes, and predicts their mean. Training rows also require **at least 6 observed hours among `t − 1h … t − 24h`** (`MIN_OBSERVED_LAST_24H`), the same rule the phone uses before it shows a forecast ("collecting" until then). Split train/test by `device_id`, never by row.
 
 ## PET projection (the app's rule, also for B4's simulated cycles)
 
@@ -87,12 +89,13 @@ The app has no model-specific code: a model trained on this contract drops in as
    ```bash
    python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
    ```
-2. Train and tune your `XGBRegressor` on the 12 `FEATURES` columns (in that order, float32, NaN left as NaN — do not impute) with `target` as the label.
+2. Train and tune an `XGBRegressor(objective="reg:tweedie")` on the 12 `FEATURES` columns (in that order, float32, NaN left as NaN — do not impute) with `expm1(target)` (bytes) as the label.
 3. Export it with the contract's signature and a new version name:
    ```python
    from pathlib import Path
    from datara_ml.export_dev_model import export_onnx
-   export_onnx(model, Path("artifacts/global_xgboost.onnx"), model_version="v0-nsm-2026-11-08")
+   export_onnx(model, Path("artifacts/global_xgboost.onnx"), model_version="final-2026-11-11",
+               output_transform="identity")  # "expm1" + output_scale for a log1p model
    ```
    Check parity with `check_parity(model, OnnxPredictor(path), X_test)`.
 4. Copy `artifacts/global_xgboost.onnx` to `datara-android/app/src/main/assets/models/global_xgboost.onnx`.
@@ -103,8 +106,8 @@ The app has no model-specific code: a model trained on this contract drops in as
    then copy `artifacts/golden_parity.json` to `datara-android/app/src/test/resources/forecast/golden_parity.json`.
 6. Run `gradlew test assembleDebug` in the app. No Kotlin change is needed unless the contract version changes.
 
-`python -m datara_ml.train_v0 --train data/train.csv --model-version <name>` does steps 2, 3 and 5 for the interim (untuned) model in one go.
+`python -m datara_ml.train_v0 --train data/train.csv --model-version <name>` does steps 2, 3 and 5 in one go: Tweedie with nested grouped-by-device tuning (`--objective log1p_smear` for the fallback).
 
 ## The placeholder model
 
-`export_dev_model.py` (no arguments) trains a tiny model (60 trees, depth 4) on **synthetic** hourly usage and writes `artifacts/global_xgboost.onnx` with `model_version = dev-synthetic-v3`. It exists only so D6 can be built and tested before the real model; its forecasts mean nothing and must not be reported in the manuscript. Every forecast row it produces carries `model_version = dev-synthetic-v3`, so those rows can be excluded from E3.
+`export_dev_model.py` (no arguments) trains a tiny model (60 trees, depth 4) on **synthetic** hourly usage and writes `artifacts/global_xgboost.onnx` with `model_version = dev-synthetic-v3` (a Tweedie model, `output_transform = identity`). It exists only so D6 can be built and tested before the real model; its forecasts mean nothing and must not be reported in the manuscript. Every forecast row it produces carries `model_version = dev-synthetic-v3`, so those rows can be excluded from E3.

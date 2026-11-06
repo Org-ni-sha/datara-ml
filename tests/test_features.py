@@ -178,7 +178,7 @@ class ProjectionTest(unittest.TestCase):
     def setUp(self):
         self.t = MON_MIDNIGHT_PH + 48 * HOUR_MS
         self.h = {self.t - j * HOUR_MS: stats(10) for j in range(1, 30)}
-        self.ten_mb = lambda x: math.log1p(10 * MB)
+        self.ten_mb = lambda x: 10 * MB
 
     def test_reach_is_interpolated_inside_the_hour(self):
         p = project(self.h, self.t, 25 * MB, self.ten_mb)
@@ -197,7 +197,7 @@ class ProjectionTest(unittest.TestCase):
 
         def model(x):
             seen.append(float(x[idx("log_bytes_last_1h")]))
-            return math.log1p(2 * MB)
+            return 2 * MB
 
         project(self.h, self.t, 5 * MB, model)
         self.assertAlmostEqual(seen[0], math.log1p(10 * MB), places=4)   # real last hour

@@ -44,7 +44,20 @@ import pandas as pd
 
 from datara_ml.phantom_spikes import HOUR_MS, NON_CELLULAR
 
-CONTRACT_VERSION = 3
+CONTRACT_VERSION = 4
+
+# How the app turns the ONNX output into next-hour bytes (metadata prop ``output_transform``):
+# bytes = max(0, output_scale * f(output)). v4 made these metadata so a Tweedie model (output in
+# bytes) and a log1p model (output in log1p bytes, optionally smeared) need no app change.
+OUTPUT_TRANSFORMS = {
+    "identity": lambda v: v,       # reg:tweedie: onnxmltools already applies exp(margin) * base
+    "expm1": math.expm1,           # squared error on log1p bytes
+}
+
+
+def to_bytes(output: float, transform: str, scale: float = 1.0) -> float:
+    """Model output to next-hour bytes, never negative (the app does the same)."""
+    return max(0.0, scale * OUTPUT_TRANSFORMS[transform](float(output)))
 
 # The ONNX input: one float32 row of N_FEATURES values, in this order.
 FEATURES = [
@@ -306,16 +319,12 @@ class Projection:
     reach_at_ms: int | None  # None = beyond the horizon
 
 
-def predicted_bytes(log_prediction: float) -> float:
-    """Model output (log1p bytes) to bytes, never negative."""
-    return max(0.0, math.expm1(float(log_prediction)))
-
-
 def project(history: History, forecast_hour_ms: int, remaining_bytes: float,
-            predict_log: Callable[[np.ndarray], float], offset_ms: int = PH_OFFSET_MS,
+            predict_bytes: Callable[[np.ndarray], float], offset_ms: int = PH_OFFSET_MS,
             horizon_hours: int = PROJECTION_HORIZON_HOURS) -> Projection:
     """Step hour by hour from ``forecast_hour_ms``, subtracting each predicted hour from
     ``remaining_bytes``; the PET is interpolated linearly inside the hour that reaches zero.
+    ``predict_bytes`` returns next-hour bytes for one feature row (see :func:`to_bytes`).
 
     Predicted hours become observed hours for the next steps' byte lags. The first step uses the
     real last-hour network; later steps use :func:`pooled_network`.
@@ -327,7 +336,7 @@ def project(history: History, forecast_hour_ms: int, remaining_bytes: float,
     for k in range(horizon_hours):
         t = forecast_hour_ms + k * HOUR_MS
         x = feature_vector(hist, t, offset_ms, None if k == 0 else pooled)
-        b = predicted_bytes(predict_log(x))
+        b = max(0.0, float(predict_bytes(x)))
         if k == 0:
             first = b
             if remaining_bytes <= 0:

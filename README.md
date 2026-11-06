@@ -83,16 +83,27 @@ python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usag
 python -m datara_ml.export_dev_model
 ```
 
-Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v2`) and `artifacts/golden_parity.json`. The app bundles both until the real model replaces them. To swap in a trained model, follow "Swapping in a trained model" in the contract.
+Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v3`) and `artifacts/golden_parity.json`. The app bundles both until the real model replaces them. To swap in a trained model, follow "Swapping in a trained model" in the contract.
 
-## v0 Global model (interim)
+## Training the Global model (v0 now, final on Nov 11)
 
 ```bash
-python -m datara_ml.train_v0 --train data/train.csv --model-version v0-nsm-2026-11-06c
+python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
+python -m datara_ml.train_v0 --train data/train.csv --model-version final-2026-11-11
 ```
 
-Trains a small, untuned model on the current data, reports 5-fold **grouped-by-device** cross-validation against two naive baselines (last-24 h average, last hour), and exports `artifacts/global_xgboost.onnx`, the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). It is an interim model for the app while collection continues; the final model is trained and tuned on 14 days of data.
+Trains with the **Tweedie objective on raw next-hour bytes** (it predicts the mean usage of an hour), tunes `tweedie_variance_power`, `max_depth` and `n_estimators` by **nested** 5-fold cross-validation grouped by device (the reported scores were never used for tuning), compares it with two naive baselines on the same rows, and exports `artifacts/global_xgboost.onnx` (`output_transform = identity`), the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). `--objective log1p_smear` trains the fallback: squared error on log1p with one smearing factor. Takes about a minute.
 
-The bundled `v0-nsm-2026-11-06c` (contract v3, second 2026-11-06 export): 689 hours from 17 devices; out-of-fold next-hour MAE 59.1 MB vs 62.3 MB (last hour) and 65.8 MB (24 h average).
+The bundled `v0-tweedie-2026-11-06` (contract v4, second 2026-11-06 export, 689 hours from 17 devices; tuned power 1.9, depth 2, 150 trees):
 
-**Known problem: v0 underpredicts total usage.** Its predictions add up to only 43% of actual usage (`sum_pred_over_actual` in `v0_report.json`), while both baselines are close to 100%. Squared error on log1p bytes predicts a typical hour, not the average one, and the PET sums predicted hours, so v0's PETs come out late. A mean-predicting objective (for example Tweedie on bytes) reached 69% in a quick test. Choose the training objective before the final model; ROADMAP Decision 2 currently says log1p.
+| Next hour, 17 devices held out | MAE (MB) | RMSE (MB) | Predicted ÷ actual total | Typical day-total error |
+|---|---|---|---|---|
+| **Tweedie** (`v0-tweedie-2026-11-06`) | **59.8** | **113.2** | **0.79** | 42% |
+| log1p + smearing (fallback) | 63.1 | 119.8 | 0.82 | 51% |
+| log1p, squared error (previous v0) | 59.1 | 120.3 | 0.43 | 68% |
+| Baseline: last hour | 62.3 | 124.8 | 0.99 | 8% |
+| Baseline: last 24 h average | 65.8 | 113.9 | 1.04 | 32% |
+
+**Why Tweedie (decided 2026-11-06):** squared error on log1p predicts a typical hour, not the average one, so its predictions summed to only 43% of real usage, and the PET adds predicted hours, so its PETs came out late. Tweedie predicts the mean and has the lowest MAE and RMSE. It still underpredicts held-out devices (0.79), which the per-user local layer corrects with a usage ratio.
+
+**Reading the baselines:** "last hour" looks best on day totals (8%) because it is scored one hour at a time with the real previous hour. Projecting a PET days ahead, it can only repeat one hour forever. Its log-scale MAE is also low because many hours are exactly zero. The fair comparison for the PET is B4's simulated cycles; on hourly error (MAE, RMSE) Tweedie beats both baselines.
