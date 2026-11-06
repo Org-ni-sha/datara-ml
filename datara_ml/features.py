@@ -44,7 +44,7 @@ import pandas as pd
 
 from datara_ml.phantom_spikes import HOUR_MS, NON_CELLULAR
 
-CONTRACT_VERSION = 2
+CONTRACT_VERSION = 3
 
 # The ONNX input: one float32 row of N_FEATURES values, in this order.
 FEATURES = [

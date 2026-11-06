@@ -27,6 +27,13 @@ class SpreadTest(unittest.TestCase):
         long = hourly_from_windows([Window(H0, H0 + MAX_WINDOW_MS + 1, 8_000_000, "GAP")])
         self.assertTrue(all(math.isnan(v) for v in long.values()))
 
+    def test_long_zero_window_is_a_measured_zero(self):
+        h = hourly_from_windows([Window(H0, H0 + 10 * HOUR_MS, 0, "GAP")])
+        self.assertEqual(h, {H0 + i * HOUR_MS: 0 for i in range(10)})
+        mixed = hourly_from_windows([Window(H0, H0 + 30 * M, 2_000_000), Window(H0 + 30 * M, H0 + 4 * HOUR_MS, 0, "GAP")])
+        self.assertEqual(mixed[H0], 2_000_000)
+        self.assertEqual(mixed[H0 + 3 * HOUR_MS], 0)
+
     def test_measured_zero_is_observed_and_reset_is_not(self):
         h = hourly_from_windows([Window(H0, H0 + HOUR_MS, 0), Window(H0 + HOUR_MS, H0 + 2 * HOUR_MS, 0, "COUNTER_RESET")])
         self.assertEqual(h[H0], 0)

@@ -1,6 +1,8 @@
-# Feature contract v2: Global XGBoost next-hour model
+# Feature contract v3: Global XGBoost next-hour model
 
-**v2 (2026-11-06):** hourly mobile bytes (target and byte lags) come from NetworkStatsManager windows instead of the 30-second TrafficStats readings, which miss about a quarter of usage. Why: [measurement gaps](measurement-gaps.md). The 12 features, their order and the ONNX signature are unchanged; only how an hour's bytes are measured changed. A v1 model is refused by the app.
+**v3 (2026-11-06):** an NSM window with **0 mobile bytes** is usable at any length: Android measured zero over the whole window, so every hour inside it is a measured zero (it was wrongly treated as unknown in v2). It adds 151 training rows and 2 devices. See [measurement gaps](measurement-gaps.md), "Which hours count".
+
+**v2 (2026-11-06):** hourly mobile bytes (target and byte lags) come from NetworkStatsManager windows instead of the 30-second TrafficStats readings, which miss about a quarter of usage. Why: [measurement gaps](measurement-gaps.md). The 12 features, their order and the ONNX signature are unchanged; only how an hour's bytes are measured changed. Models for earlier contract versions are refused by the app.
 
 This is the fixed interface between training (this repo, B2–B5) and the Android app (`datara-android`, D6). The phone builds exactly these 12 values, in this order, from its own Room tables and feeds them to `global_xgboost.onnx`. A model trained on anything else will give plausible but wrong forecasts, so **any change here needs a new `CONTRACT_VERSION`, a matching app change, and a regenerated parity fixture.**
 
@@ -16,7 +18,7 @@ This is the fixed interface between training (this repo, B2–B5) and the Androi
 | ONNX output | name `variable`, `tensor(float32)`, shape `[batch, 1]` |
 | Output meaning | predicted `log1p(mobile bytes in the next hour)`. The app uses `max(0, expm1(output))`. |
 | Missing values | `NaN` in the input. XGBoost learns a default branch for missing values, and the ONNX `TreeEnsembleRegressor` from onnxmltools follows it (`nodes_missing_value_tracks_true`). Tested: ONNX matches XGBoost within 1e-4 on rows with NaN, including an all-NaN row. |
-| Metadata props | `contract_version` (`2`), `model_version` (logged in every `forecasts.model_version`), `feature_names` (comma-separated, the order below). The app refuses a model whose `contract_version` or feature count does not match. |
+| Metadata props | `contract_version` (`3`), `model_version` (logged in every `forecasts.model_version`), `feature_names` (comma-separated, the order below). The app refuses a model whose `contract_version` or feature count does not match. |
 | Opset | `ai.onnx` 15 / `ai.onnx.ml` 3; runs on ONNX Runtime 1.31 (Python and Android). |
 
 ## Definitions used by every feature
@@ -24,7 +26,7 @@ This is the fixed interface between training (this repo, B2–B5) and the Androi
 - **Hour:** `[hour_start_ms, hour_start_ms + 3,600,000)`, epoch milliseconds. A 30-second reading belongs to the hour its end time falls in (harvester `timestamp`, phone `usage_samples.interval_end`).
 - **Forecast hour `t`:** the hour being predicted. Features use only hours before `t`.
 - **NSM window:** one NetworkStatsManager read `[start, end)` and its mobile bytes. Harvester: the `app_usage_records` rows sharing `start_time`/`end_time` (local time, converted with `utc_offset_minutes`), mobile bytes = all `MOBILE` rows over **every uid, including `hotspot` (uid −5)** and other negative uids, matching the device-level query the phone uses. Phone: one `durable_readings` row (`since`, `until`, `bytes_rx + bytes_tx`).
-- **Usable window:** status `OK`, `GAP` or `LEGACY`, and at most **2 hours** long (`MAX_WINDOW_MS`). `COUNTER_RESET`, `CLOCK_ERROR` or a longer window is not usable.
+- **Usable window:** status `OK`, `GAP` or `LEGACY`, and either at most **2 hours** long (`MAX_WINDOW_MS`) or with **0 mobile bytes** (any length). `COUNTER_RESET`, `CLOCK_ERROR` or a longer window with bytes is not usable.
 - **Mobile bytes of an hour:** each usable window's bytes spread evenly over its span, summed per clock hour (`nsm_hourly.hourly_from_windows`).
 - **Observed hour:** every window touching it is usable, they do not overlap, and together they cover the hour except at most 60 s (`COVERAGE_TOLERANCE_MS`). Every value read from an unobserved hour is missing. A measured 0 is observed, not missing.
 - **30-second readings of an hour** (network features only): readings whose end time falls in the hour (harvester `timestamp`, phone `usage_samples.interval_end`). An observed hour with no readings has its network features missing.
@@ -105,4 +107,4 @@ The app has no model-specific code: a model trained on this contract drops in as
 
 ## The placeholder model
 
-`export_dev_model.py` (no arguments) trains a tiny model (60 trees, depth 4) on **synthetic** hourly usage and writes `artifacts/global_xgboost.onnx` with `model_version = dev-synthetic-v2`. It exists only so D6 can be built and tested before the real model; its forecasts mean nothing and must not be reported in the manuscript. Every forecast row it produces carries `model_version = dev-synthetic-v2`, so those rows can be excluded from E3.
+`export_dev_model.py` (no arguments) trains a tiny model (60 trees, depth 4) on **synthetic** hourly usage and writes `artifacts/global_xgboost.onnx` with `model_version = dev-synthetic-v3`. It exists only so D6 can be built and tested before the real model; its forecasts mean nothing and must not be reported in the manuscript. Every forecast row it produces carries `model_version = dev-synthetic-v3`, so those rows can be excluded from E3.

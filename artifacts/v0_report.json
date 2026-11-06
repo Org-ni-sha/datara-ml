@@ -1,7 +1,7 @@
 {
- "model_version": "v0-nsm-2026-11-06b",
- "rows": 538,
- "devices": 15,
+ "model_version": "v0-nsm-2026-11-06c",
+ "rows": 689,
+ "devices": 17,
  "hours_from": 1793289600000,
  "hours_to": 1793948400000,
  "cv": "5-fold grouped by device (out-of-fold, whole devices held out)",
@@ -19,37 +19,40 @@
  },
  "metrics": {
   "model": {
-   "mae_log": 3.5730575222593624,
-   "mae_mb": 75.29231870111987,
-   "rmse_mb": 138.84736660386844,
-   "r2_log": 0.49343926817739026
+   "mae_log": 3.14783610167927,
+   "mae_mb": 59.12683250893962,
+   "rmse_mb": 120.30962489857941,
+   "r2_log": 0.6931808026980548,
+   "sum_pred_over_actual": 0.4303997638262211
   },
   "last_24h_avg": {
-   "mae_log": 4.497464731831301,
-   "mae_mb": 78.95488656375714,
-   "rmse_mb": 126.79128641141803,
-   "r2_log": -0.10946037576784962
+   "mae_log": 5.3128758895251,
+   "mae_mb": 65.78189362983771,
+   "rmse_mb": 113.92173545858202,
+   "r2_log": -0.05314291900649337,
+   "sum_pred_over_actual": 1.035743681729365
   },
   "last_hour": {
-   "mae_log": 2.5451959305616847,
-   "mae_mb": 77.55609223745476,
-   "rmse_mb": 140.1785756744976,
-   "r2_log": 0.4931239691992445
+   "mae_log": 2.096740132490742,
+   "mae_mb": 62.347153574395826,
+   "rmse_mb": 124.77272035579087,
+   "r2_log": 0.6845883160371764,
+   "sum_pred_over_actual": 0.9938204661657773
   }
  },
  "gain_importance": {
-  "log_bytes_last_1h": 936.3295,
-  "radio_gen_last_hour": 427.7804,
-  "cellular_share_last_hour": 281.9926,
-  "log_avg_bytes_last_3h": 169.3285,
-  "log_bytes_same_hour_yesterday": 130.7081,
-  "log_avg_bytes_last_24h": 87.5492,
-  "hour_cos": 85.8174,
-  "day_of_week": 72.3482,
-  "signal_dbm_last_hour": 63.26,
-  "is_weekend": 59.4344,
-  "hour_sin": 56.383,
-  "log_bytes_same_hour_last_week": 35.7278
+  "log_bytes_last_1h": 1576.6754,
+  "radio_gen_last_hour": 591.9138,
+  "log_avg_bytes_last_3h": 584.7825,
+  "cellular_share_last_hour": 159.6396,
+  "log_bytes_same_hour_yesterday": 148.2924,
+  "log_avg_bytes_last_24h": 94.038,
+  "signal_dbm_last_hour": 88.0674,
+  "hour_cos": 82.2306,
+  "log_bytes_same_hour_last_week": 63.1992,
+  "day_of_week": 54.0499,
+  "hour_sin": 46.8654,
+  "is_weekend": 35.8996
  },
- "max_abs_xgboost_onnx": 2.288818359375e-05
+ "max_abs_xgboost_onnx": 1.9073486328125e-05
 }

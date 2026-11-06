@@ -34,7 +34,7 @@ from datara_ml.features import (
 )
 from datara_ml.phantom_spikes import HOUR_MS
 
-DEV_MODEL_VERSION = "dev-synthetic-v2"
+DEV_MODEL_VERSION = "dev-synthetic-v3"
 # 2026-11-02 00:00 Asia/Manila, an exact hour boundary in epoch ms
 START_MS = 1_793_548_800_000
 TARGET_OPSET = 15
@@ -221,6 +221,9 @@ def nsm_parity_cases() -> list[dict]:
         # five uncovered minutes (tracking off) and an overlap both make their hour unobserved
         "uncovered_and_overlap": [Window(t, t + 25 * m, 1_000_000), Window(t + 30 * m, t + 60 * m, 1_000_000),
                                   Window(t + 60 * m, t + 100 * m, 2_000_000), Window(t + 90 * m, t + 120 * m, 2_000_000)],
+        # a zero-byte read longer than 2 h is a measured zero for every hour it covers (v3)
+        "long_zero_window": [Window(t, t + 20 * m, 1_000_000), Window(t + 20 * m, t + 200 * m, 0, "GAP"),
+                             Window(t + 200 * m, t + 240 * m, 2_000_000)],
         # 30 seconds uncovered is within the tolerance
         "within_tolerance": [Window(t, t + 30 * m, 1_500_000), Window(t + 30 * m + 30_000, t + 60 * m, 1_500_000)],
     }

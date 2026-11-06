@@ -72,7 +72,7 @@ The model learns "how much will this person use next hour" from past hours. If t
 Hourly mobile bytes come from NSM:
 
 1. Each NSM window's mobile bytes (all apps, including hotspot sharing) are **spread evenly** over the window and added to the clock hours it covers.
-2. An hour counts as **measured** only if every window touching it is **at most 2 hours long**, the windows don't overlap, and together they cover the hour (up to 1 minute missing).
+2. An hour counts as **measured** only if every window touching it is **at most 2 hours long or measured 0 mobile bytes**, the windows don't overlap, and together they cover the hour (up to 1 minute missing). A window with zero mobile bytes (the phone was on Wi-Fi or idle) is exact at any length: there is nothing to place, so every hour inside it is a measured zero.
 3. Hours that fail are **unmeasured**: they are not used as training targets and appear as missing values in the features. A measured zero (the phone was on Wi-Fi) counts.
 
 The app does exactly the same with its own 10-minute NSM readings (`durable_readings`), so training and the phone agree. Signal, radio generation and share of time on mobile data still come from the 30-second readings, because NSM does not record them; they are missing for an hour with no 30-second readings.
@@ -80,8 +80,21 @@ The app does exactly the same with its own 10-minute NSM readings (`durable_read
 ## Limits
 
 - **Spreading is an estimate.** Within a window up to 2 hours long, use is assumed even. A burst at the start of a 2-hour window is split across two hours.
-- **Lost hours.** Hours inside longer windows (the app slept for more than 2 hours) are dropped. In the 2026-11-06 export, 648 of 2,388 hours touched by NSM windows are measured; 1,623 were lost to long windows and 117 to small coverage holes. This cuts the training rows from 841 (v1) to 476, from 13 devices instead of 17.
+- **Lost hours.** Hours inside longer windows that carry bytes (the app slept for more than 2 hours while data was used) are dropped. See "Which hours count" below.
 - **The 2-hour limit** is a judgement call (`MAX_WINDOW_MS` in `nsm_hourly.py`): longer windows give more hours but blur when the data was used. Android itself stores usage in buckets of about 2 hours.
+
+## Which hours count (checked 2026-11-06, second export, 18 devices)
+
+| Step | Device-hours |
+|---|---|
+| Hours from each device's first to last NSM window | 2,687 |
+| Touched by an NSM window | 2,657 |
+| Lost to windows over 2 h with bytes (v2 also lost zero-byte ones) | 1,636 (v2: 1,795) |
+| Lost to coverage holes or overlaps | 135 (v2: 129) |
+| **Measured** | **886** (v2: 733) |
+| With ≥ 6 measured hours in the previous 24 (training rows) | **689 from 17 devices** (v2: 538 from 15) |
+
+Why the 2-hour limit stays: windows just over 2 hours are rare. Windows of 2–4 hours span about 213 hours; most lost hours sit in windows of 4 hours to several days (median 5.6 h) that carry real use (median 16 MB/h), which can't be placed in hours. Tested on the same held-out rows (whole devices held out), allowing 3 h or 4 h windows changed next-hour MAE by under 2%, within the noise of 17 devices, while blurring when data was used. Counting zero-byte windows improved MAE on the same rows (75.3 → 73.5 MB) and is exact, so v3 adopts it.
 - `phantom_spikes.py` and its audit stay in the repo as evidence of the counter artifact, but the target no longer depends on them.
 
 ## Suggested Chapter 3 paragraph
