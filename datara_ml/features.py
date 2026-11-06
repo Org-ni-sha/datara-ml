@@ -5,12 +5,15 @@ This is the **reference implementation** of ``docs/feature-contract.md``. The An
 fixture written by ``export_dev_model.py`` checks that it does. Change a definition here only
 together with the contract, the app, and a new ``CONTRACT_VERSION``.
 
-Inputs
-------
-* the cleaned hourly table from ``phantom_spikes.py`` (``hourly_mobile.csv``: ``device_id``,
-  ``hour_start_ms``, ``mobile_bytes``; NaN = hour dropped by B1), and
+Inputs (contract v2)
+--------------------
+* the raw ``app_usage_records`` export: NetworkStatsManager windows, from which
+  ``nsm_hourly.nsm_hourly`` builds the hourly mobile bytes (target and byte lags), and
 * the raw ``usage_records`` export, from which :func:`hourly_network` builds the per-hour network
-  statistics (reading counts, signal median, radio generation counts).
+  statistics (reading counts, signal median, radio generation counts) from the 30-second rows.
+
+Contract v1 took hourly bytes from the 30-second TrafficStats rows; they miss about a quarter of
+the bytes (``docs/measurement-gaps.md``), so v2 uses NSM.
 
 :func:`build_hourly_table` joins them. :func:`build_training_set` then produces one row per
 observed device-hour: the 12 features (computed only from earlier hours) and the target.
@@ -19,10 +22,11 @@ Definitions
 -----------
 * An **hour** is ``[hour_start_ms, hour_start_ms + 1 h)`` in epoch milliseconds. A 30-second
   reading belongs to the hour its ``timestamp`` (the phone's ``interval_end``) falls in.
-* An hour is **observed** when it has at least one reading and B1 did not drop it. Everything
-  read from an unobserved hour is missing (NaN).
-* **Mobile bytes** of an hour: the B1 rule (``phantom_spikes.COUNTED_STATUSES`` and a network
-  type other than WIFI/NONE).
+* An hour is **observed** when NSM measured it (``nsm_hourly``: covered by non-overlapping
+  windows of at most 2 hours). Everything read from an unobserved hour is missing (NaN).
+* **Mobile bytes** of an hour: NSM mobile bytes, each window spread evenly over its span.
+* **Network features** of an observed hour come from its 30-second readings; with no readings in
+  that hour they are missing.
 * Time features use **Philippine time (UTC+8)**, the study's zone. The phone uses its own zone,
   which for every participant is Asia/Manila.
 """
@@ -40,7 +44,7 @@ import pandas as pd
 
 from datara_ml.phantom_spikes import HOUR_MS, NON_CELLULAR
 
-CONTRACT_VERSION = 1
+CONTRACT_VERSION = 2
 
 # The ONNX input: one float32 row of N_FEATURES values, in this order.
 FEATURES = [
@@ -133,7 +137,9 @@ def hourly_network(usage: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_hourly_table(hourly_mobile: pd.DataFrame, network: pd.DataFrame) -> pd.DataFrame:
-    """Join B1's cleaned hourly totals with :func:`hourly_network`."""
+    """Join the NSM hourly bytes (``nsm_hourly.nsm_hourly``; NaN = unobserved) with
+    :func:`hourly_network`. Hours with no 30-second readings get 0 readings (network features
+    missing)."""
     hm = hourly_mobile[["device_id", "hour_start_ms", "mobile_bytes"]]
     out = hm.merge(network, on=["device_id", "hour_start_ms"], how="left")
     out["readings"] = out["readings"].fillna(0).astype("int64")
@@ -335,17 +341,23 @@ def project(history: History, forecast_hour_ms: int, remaining_bytes: float,
 
 
 def main(argv: list[str] | None = None) -> int:
-    p = argparse.ArgumentParser(description="Build the B2 training set (feature contract v1).")
-    p.add_argument("--hourly", required=True, help="hourly_mobile.csv from phantom_spikes")
-    p.add_argument("--usage", required=True, help="CSV export of usage_records")
+    from datara_ml.nsm_hourly import nsm_hourly
+
+    p = argparse.ArgumentParser(description="Build the B2 training set (feature contract v2).")
+    p.add_argument("--apps", required=True, help="CSV export of app_usage_records (NSM windows)")
+    p.add_argument("--usage", required=True, help="CSV export of usage_records (30-second rows)")
     p.add_argument("--out", required=True, help="training set (CSV)")
     args = p.parse_args(argv)
 
-    hourly_mobile = pd.read_csv(args.hourly)
+    apps = pd.read_csv(args.apps)
     usage = pd.read_csv(args.usage, usecols=["device_id", "timestamp", "network_type", "signal_strength"])
-    table = build_hourly_table(hourly_mobile, hourly_network(usage))
+    hourly = nsm_hourly(apps)
+    table = build_hourly_table(hourly, hourly_network(usage))
     train = build_training_set(table)
     train.to_csv(args.out, index=False)
+    observed = hourly["mobile_bytes"].notna()
+    print(f"NSM hours: {len(hourly)}  observed: {int(observed.sum())}  "
+          f"unobserved (long/overlapping/uncovered windows): {int((~observed).sum())}")
     print(f"rows: {len(train)}  devices: {train['device_id'].nunique()}  features: {N_FEATURES}")
     return 0
 
