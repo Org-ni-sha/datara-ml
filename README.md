@@ -47,7 +47,9 @@ python -m datara_ml.phantom_spikes --usage data/usage_records.csv --apps data/ap
 ```
 
 The command writes two files and prints a summary:
-- `hourly_mobile.csv`: one row per device and hour. `mobile_bytes` is the cleaned total and is empty for dropped hours. Use it as the input for the B2 next-hour target.
+- `hourly_mobile.csv`: one row per device and hour. `mobile_bytes` is the cleaned 30-second total and is empty for dropped hours.
+
+**Since feature contract v2 the model's target no longer uses this step:** hourly usage comes from NetworkStatsManager (`nsm_hourly.py`), because the 30-second readings also miss time the app slept. B1 stays as evidence of the counter artifact; see [measurement gaps](docs/measurement-gaps.md).
 - `phantom_spike_audit.csv`: every changed or dropped hour, with the 30-second and NSM totals in MB. Keep it as evidence for Chapter 3 and the defense.
 
 ### Reading the summary
@@ -63,15 +65,17 @@ Fill in *N*, *D* and *M* from the printed summary.
 
 ## B2: feature contract
 
-[`docs/feature-contract.md`](docs/feature-contract.md) fixes the 12 inputs of the Global XGBoost next-hour model, their order, missing-value rules and the ONNX signature. The Android app reproduces them exactly. [`datara_ml/features.py`](datara_ml/features.py) is the reference implementation:
+[`docs/feature-contract.md`](docs/feature-contract.md) (v2) fixes the 12 inputs of the Global XGBoost next-hour model, their order, missing-value rules and the ONNX signature. The Android app reproduces them exactly. [`datara_ml/features.py`](datara_ml/features.py) is the reference implementation:
 
 ```bash
-python -m datara_ml.features --hourly data/hourly_mobile.csv --usage data/usage_records.csv --out data/train.csv
+python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
 ```
 
 `data/train.csv` has `device_id`, `hour_start_ms`, the 12 features and `target` (log1p next-hour mobile bytes). Split by `device_id`.
 
-**Internet speed is not a feature:** the harvester never recorded it. See the contract's "What is not a feature".
+**Internet speed is not a feature:** the harvester never recorded it.
+
+**Hourly usage comes from NetworkStatsManager, not the 30-second readings**: they miss about a quarter of usage. [Measurement gaps](docs/measurement-gaps.md) explains why, with the queries ([`measurement-gaps.sql`](docs/measurement-gaps.sql)) and `python -m datara_ml.capture_report` to reproduce the numbers. See the contract's "What is not a feature".
 
 ## Placeholder model and parity fixture
 
@@ -79,12 +83,14 @@ python -m datara_ml.features --hourly data/hourly_mobile.csv --usage data/usage_
 python -m datara_ml.export_dev_model
 ```
 
-Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v1`) and `artifacts/golden_parity.json`. The app bundles both until the real model replaces them. To swap in a trained model, follow "Swapping in a trained model" in the contract.
+Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v2`) and `artifacts/golden_parity.json`. The app bundles both until the real model replaces them. To swap in a trained model, follow "Swapping in a trained model" in the contract.
 
 ## v0 Global model (interim)
 
 ```bash
-python -m datara_ml.train_v0 --train data/train.csv --model-version v0-2026-11-06
+python -m datara_ml.train_v0 --train data/train.csv --model-version v0-nsm-2026-11-06
 ```
 
 Trains a small, untuned model on the current data, reports 5-fold **grouped-by-device** cross-validation against two naive baselines (last-24 h average, last hour), and exports `artifacts/global_xgboost.onnx`, the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). It is an interim model for the app while collection continues; the final model is trained and tuned on 14 days of data.
+
+The bundled `v0-nsm-2026-11-06` (contract v2, 2026-11-06 export): 476 hours from 13 devices; out-of-fold next-hour MAE 78.5 MB vs 79.8 MB (last hour) and 81.7 MB (24 h average). It barely beats the naive baselines, so treat it as a working placeholder, not a result.

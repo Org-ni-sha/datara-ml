@@ -1,9 +1,9 @@
 {
- "model_version": "v0-2026-11-06",
- "rows": 841,
- "devices": 17,
- "hours_from": 1793257200000,
- "hours_to": 1793901600000,
+ "model_version": "v0-nsm-2026-11-06",
+ "rows": 476,
+ "devices": 13,
+ "hours_from": 1793289600000,
+ "hours_to": 1793898000000,
  "cv": "5-fold grouped by device (out-of-fold, whole devices held out)",
  "params": {
   "n_estimators": 150,
@@ -19,37 +19,37 @@
  },
  "metrics": {
   "model": {
-   "mae_log": 4.619474520329492,
-   "mae_mb": 65.01908896374412,
-   "rmse_mb": 191.5970075640016,
-   "r2_log": 0.45749879087508893
+   "mae_log": 3.3841024243788382,
+   "mae_mb": 78.5197225710964,
+   "rmse_mb": 144.32071334619243,
+   "r2_log": 0.5338177709541407
   },
   "last_24h_avg": {
-   "mae_log": 6.30288935394264,
-   "mae_mb": 72.06444605593938,
-   "rmse_mb": 177.4690971101972,
-   "r2_log": -0.2733190942766137
+   "mae_log": 4.687590790247844,
+   "mae_mb": 81.71405811209726,
+   "rmse_mb": 130.18455175086035,
+   "r2_log": -0.15976603073854667
   },
   "last_hour": {
-   "mae_log": 4.002933390148051,
-   "mae_mb": 73.51228618198928,
-   "rmse_mb": 231.4525852331955,
-   "r2_log": 0.277048406280727
+   "mae_log": 2.5243248172270603,
+   "mae_mb": 79.7684031089942,
+   "rmse_mb": 144.13420231193837,
+   "r2_log": 0.5079121270206621
   }
  },
  "gain_importance": {
-  "log_bytes_last_1h": 1336.1034,
-  "radio_gen_last_hour": 1100.8987,
-  "log_avg_bytes_last_3h": 406.176,
-  "cellular_share_last_hour": 330.3023,
-  "log_avg_bytes_last_24h": 265.1053,
-  "is_weekend": 184.0333,
-  "hour_cos": 165.2051,
-  "log_bytes_same_hour_yesterday": 133.1238,
-  "signal_dbm_last_hour": 114.5319,
-  "day_of_week": 111.6057,
-  "log_bytes_same_hour_last_week": 100.6586,
-  "hour_sin": 97.8426
+  "log_bytes_last_1h": 931.085,
+  "cellular_share_last_hour": 273.1967,
+  "log_avg_bytes_last_3h": 168.6334,
+  "log_bytes_same_hour_yesterday": 139.3886,
+  "log_avg_bytes_last_24h": 101.6392,
+  "hour_cos": 82.6027,
+  "radio_gen_last_hour": 77.8875,
+  "day_of_week": 69.6674,
+  "signal_dbm_last_hour": 65.5198,
+  "hour_sin": 60.4575,
+  "is_weekend": 36.8357,
+  "log_bytes_same_hour_last_week": 28.7189
  },
- "max_abs_xgboost_onnx": 1.71661376953125e-05
+ "max_abs_xgboost_onnx": 1.52587890625e-05
 }
