@@ -52,6 +52,18 @@ class ExportTest(unittest.TestCase):
         self.assertEqual(props["model_version"], DEV_MODEL_VERSION)
         self.assertEqual(props["feature_names"].split(","), FEATURES)
 
+    def test_output_transform_metadata(self):
+        self.assertEqual(self.predictor.output_transform, "identity")  # Tweedie: output in bytes
+        self.assertEqual(self.predictor.output_scale, 1.0)
+        x = self.train[FEATURES].to_numpy(np.float32)[:20]
+        np.testing.assert_allclose(self.predictor.batch(x), self.model.predict(x), rtol=1e-4)
+
+    def test_transform_must_fit_the_objective(self):
+        with self.assertRaises(ValueError):
+            export_onnx(self.model, Path(self.tmp.name) / "bad.onnx", "x", output_transform="expm1")
+        with self.assertRaises(ValueError):
+            export_onnx(self.model, Path(self.tmp.name) / "bad.onnx", "x", output_transform="log")
+
     def test_onnx_matches_xgboost_including_missing_values(self):
         x = self.train[FEATURES].to_numpy(np.float32)
         self.assertTrue(np.isnan(x).any(), "the parity rows must contain NaN")
@@ -83,7 +95,8 @@ class ExportTest(unittest.TestCase):
             }
             x = feature_vector(history, case["forecast_hour_ms"], fixture["utc_offset_ms"])
             np.testing.assert_array_equal(x, np.array([nan(v) for v in case["expected_features"]], np.float32))
-            self.assertAlmostEqual(self.predictor(x), case["expected_log_prediction"], places=5)
+            self.assertAlmostEqual(self.predictor.raw(x), case["expected_output"], delta=abs(case["expected_output"]) * 1e-6)
+            self.assertAlmostEqual(self.predictor(x), case["expected_bytes"], delta=case["expected_bytes"] * 1e-6 + 1e-6)
             for p in case["projections"]:
                 got = project(history, case["forecast_hour_ms"], p["remaining_bytes"], self.predictor)
                 self.assertEqual(got.reach_at_ms, p["reach_at_ms"])

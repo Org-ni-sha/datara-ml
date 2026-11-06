@@ -10,8 +10,9 @@ it with the real model by running :func:`export_onnx` on your trained ``XGBRegre
 Outputs (``--out``, default ``artifacts/``):
 
 * ``global_xgboost.onnx``: input ``features`` float32 ``[batch, 12]``, output ``variable``
-  float32 ``[batch, 1]`` = predicted log1p(next-hour mobile bytes). Metadata props:
-  ``contract_version``, ``model_version``, ``feature_names``.
+  float32 ``[batch, 1]``. Metadata props: ``contract_version``, ``model_version``,
+  ``feature_names``, ``output_transform`` and ``output_scale`` (how the output becomes next-hour
+  bytes, see ``features.to_bytes``). The placeholder is a Tweedie model: output in bytes.
 * ``golden_parity.json``: fixed hourly histories -> expected feature vectors -> expected ONNX
   outputs -> expected PET projections. Copy it to the app's test resources together with the
   model it was generated from.
@@ -30,7 +31,7 @@ import pandas as pd
 
 from datara_ml.features import (
     CONTRACT_VERSION, FEATURES, INPUT_NAME, N_FEATURES, OUTPUT_NAME, PH_OFFSET_MS, HourStats,
-    History, build_training_set, device_histories, feature_vector, project,
+    History, OUTPUT_TRANSFORMS, to_bytes, build_training_set, device_histories, feature_vector, project,
 )
 from datara_ml.phantom_spikes import HOUR_MS
 
@@ -89,23 +90,30 @@ def train_dev_model(train: pd.DataFrame):
     from xgboost import XGBRegressor
 
     model = XGBRegressor(
+        objective="reg:tweedie", tweedie_variance_power=1.5,
         n_estimators=60, max_depth=4, learning_rate=0.15, subsample=0.9,
-        # An explicit base_score: onnxmltools reads it from the parameters
-        base_score=float(train["target"].mean()),
         random_state=0, n_jobs=1, tree_method="hist",
     )
-    model.fit(train[FEATURES].to_numpy(np.float32), train["target"].to_numpy(np.float32))
+    model.fit(train[FEATURES].to_numpy(np.float32), np.expm1(train["target"].to_numpy()).astype(np.float32))
     return model
 
 
-def export_onnx(model, path: Path, model_version: str) -> None:
+def export_onnx(model, path: Path, model_version: str, output_transform: str = "identity",
+                output_scale: float = 1.0) -> None:
     """Convert a fitted ``XGBRegressor`` trained on the contract's 12 features to the ONNX file
     the app loads. Use this for the real model too; ``model_version`` ends up in every logged
-    forecast (``forecasts.model_version``)."""
+    forecast (``forecasts.model_version``). ``output_transform``: ``identity`` for
+    ``reg:tweedie`` (the ONNX graph ends in exp, so its output is bytes), ``expm1`` for a log1p
+    model; ``output_scale`` multiplies the bytes (a smearing factor)."""
     import onnx
     from onnxmltools import convert_xgboost
     from onnxmltools.convert.common.data_types import FloatTensorType
 
+    if output_transform not in OUTPUT_TRANSFORMS:
+        raise ValueError(f"unknown output_transform {output_transform!r}")
+    objective = model.get_params().get("objective") or ""
+    if (objective == "reg:tweedie") != (output_transform == "identity"):
+        raise ValueError(f"output_transform {output_transform!r} does not fit objective {objective!r}")
     if getattr(model, "n_features_in_", N_FEATURES) != N_FEATURES:
         raise ValueError(f"model has {model.n_features_in_} features, the contract has {N_FEATURES}")
     onx = convert_xgboost(model, initial_types=[(INPUT_NAME, FloatTensorType([None, N_FEATURES]))],
@@ -116,6 +124,8 @@ def export_onnx(model, path: Path, model_version: str) -> None:
         "contract_version": str(CONTRACT_VERSION),
         "model_version": model_version,
         "feature_names": ",".join(FEATURES),
+        "output_transform": output_transform,
+        "output_scale": repr(float(output_scale)),
     }.items():
         prop = onx.metadata_props.add()
         prop.key, prop.value = key, value
@@ -124,25 +134,36 @@ def export_onnx(model, path: Path, model_version: str) -> None:
 
 
 class OnnxPredictor:
-    """log1p prediction for one feature row, as the app computes it (float32 in, float32 out)."""
+    """The model as the app runs it: raw float32 output, and next-hour bytes via the model's
+    ``output_transform`` / ``output_scale`` metadata. Calling it returns bytes."""
 
     def __init__(self, path: Path):
         import onnxruntime as ort
         self.session = ort.InferenceSession(str(path), providers=["CPUExecutionProvider"])
+        props = self.session.get_modelmeta().custom_metadata_map
+        self.output_transform = props.get("output_transform", "")
+        if self.output_transform not in OUTPUT_TRANSFORMS:
+            raise ValueError(f"{path}: unknown output_transform {self.output_transform!r}")
+        self.output_scale = float(props.get("output_scale", "1.0"))
 
     def batch(self, x: np.ndarray) -> np.ndarray:
         out = self.session.run([OUTPUT_NAME], {INPUT_NAME: x.astype(np.float32)})[0]
         return np.asarray(out, dtype=np.float32).reshape(-1)
 
-    def __call__(self, x: np.ndarray) -> float:
+    def raw(self, x: np.ndarray) -> float:
         return float(self.batch(x.reshape(1, -1))[0])
 
+    def __call__(self, x: np.ndarray) -> float:
+        return to_bytes(self.raw(x), self.output_transform, self.output_scale)
 
-def check_parity(model, predictor: OnnxPredictor, x: np.ndarray, atol: float = 1e-4) -> float:
-    """Largest |XGBoost - ONNX| over the rows; raises if above ``atol``. Rows may contain NaN."""
-    diff = float(np.max(np.abs(model.predict(x) - predictor.batch(x))))
-    if diff > atol:
-        raise AssertionError(f"XGBoost and ONNX disagree by {diff}")
+
+def check_parity(model, predictor: OnnxPredictor, x: np.ndarray, rtol: float = 1e-4) -> float:
+    """Largest relative |XGBoost - ONNX| of the raw output (bytes for Tweedie, log1p for the
+    fallback); raises if above ``rtol``. Rows may contain NaN."""
+    a = model.predict(x).astype(np.float64)
+    diff = float(np.max(np.abs(a - predictor.batch(x)) / np.maximum(1.0, np.abs(a))))
+    if diff > rtol:
+        raise AssertionError(f"XGBoost and ONNX disagree by {diff} (relative)")
     return diff
 
 
@@ -194,7 +215,8 @@ def golden_cases(history: History, predictor: OnnxPredictor) -> list[dict]:
             "history": _history_json(hist),
             "forecast_hour_ms": t,
             "expected_features": [_num(float(v)) for v in x],
-            "expected_log_prediction": predictor(x),
+            "expected_output": predictor.raw(x),
+            "expected_bytes": predictor(x),
             "projections": projections,
         })
     return cases
