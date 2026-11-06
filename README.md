@@ -93,4 +93,4 @@ python -m datara_ml.train_v0 --train data/train.csv --model-version v0-nsm-2026-
 
 Trains a small, untuned model on the current data, reports 5-fold **grouped-by-device** cross-validation against two naive baselines (last-24 h average, last hour), and exports `artifacts/global_xgboost.onnx`, the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). It is an interim model for the app while collection continues; the final model is trained and tuned on 14 days of data.
 
-The bundled `v0-nsm-2026-11-06` (contract v2, 2026-11-06 export): 476 hours from 13 devices; out-of-fold next-hour MAE 78.5 MB vs 79.8 MB (last hour) and 81.7 MB (24 h average). It barely beats the naive baselines, so treat it as a working placeholder, not a result.
+The bundled `v0-nsm-2026-11-06b` (contract v2, second 2026-11-06 export): 538 hours from 15 devices; out-of-fold next-hour MAE 75.3 MB vs 77.6 MB (last hour) and 79.0 MB (24 h average). It barely beats the naive baselines, so treat it as a working placeholder, not a result.
