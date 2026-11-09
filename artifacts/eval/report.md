@@ -89,6 +89,75 @@ Devices that learned ≥ 168 hours (the switch's minimum): **0** of 17; local la
 | Global, same rows/cycles | 856 | 18.2 | 8.0 | 74% | -11.1 |
 | Local layer (shadow, when ready) | 856 | 17.6 | 9.0 | 78% | -11.5 |
 
+## Forecast alerts as classification
+
+The app warns when the PET is within 24 h or within 3 h (D8). At every forecast hour and quota of a held-out device, each method's projection is a yes/no prediction, scored against whether measured usage really reached the quota within that time. Positive = reached within the horizon. Precision: when it warned, was it right? Recall: of the times the quota was about to be reached, how often did it warn?
+
+### Within 24h (all quotas: 1856 labelled starts, 900 not labelable)
+
+Confusion matrix, Global model:
+
+| | Actually reached | Not reached |
+|---|---|---|
+| **Alert** | 1093 (TP) | 363 (FP) |
+| **No alert** | 82 (FN) | 318 (TN) |
+
+| Quota | Method | Starts | Positives | Precision | Recall | F1 | Accuracy | Specificity |
+|---|---|---|---|---|---|---|---|---|
+| 100 MB | Global Tweedie model | 583 | 94% | 0.94 | 1.00 | 0.97 | 0.94 | 0.00 |
+| 100 MB | Last hour | 583 | 94% | 0.98 | 0.67 | 0.79 | 0.67 | 0.77 |
+| 100 MB | Average of last 24 h | 583 | 94% | 0.97 | 0.96 | 0.96 | 0.93 | 0.49 |
+| 100 MB | Same hour yesterday | 583 | 94% | 0.97 | 0.96 | 0.96 | 0.93 | 0.49 |
+| 500 MB | Global Tweedie model | 487 | 76% | 0.76 | 1.00 | 0.87 | 0.76 | 0.00 |
+| 500 MB | Last hour | 487 | 76% | 0.89 | 0.55 | 0.68 | 0.60 | 0.77 |
+| 500 MB | Average of last 24 h | 487 | 76% | 0.82 | 0.77 | 0.79 | 0.69 | 0.46 |
+| 500 MB | Same hour yesterday | 487 | 76% | 0.82 | 0.77 | 0.79 | 0.69 | 0.46 |
+| 1 GB | Global Tweedie model | 426 | 55% | 0.49 | 0.71 | 0.58 | 0.44 | 0.10 |
+| 1 GB | Last hour | 426 | 55% | 0.74 | 0.46 | 0.57 | 0.61 | 0.80 |
+| 1 GB | Average of last 24 h | 426 | 55% | 0.67 | 0.60 | 0.63 | 0.62 | 0.63 |
+| 1 GB | Same hour yesterday | 426 | 55% | 0.67 | 0.60 | 0.63 | 0.62 | 0.63 |
+| 3 GB | Global Tweedie model | 360 | 6% | 0.14 | 0.35 | 0.20 | 0.85 | 0.88 |
+| 3 GB | Last hour | 360 | 6% | 0.18 | 0.45 | 0.25 | 0.85 | 0.88 |
+| 3 GB | Average of last 24 h | 360 | 6% | 0.28 | 0.60 | 0.38 | 0.89 | 0.91 |
+| 3 GB | Same hour yesterday | 360 | 6% | 0.28 | 0.60 | 0.38 | 0.89 | 0.91 |
+| All | Global Tweedie model | 1856 | 63% | 0.75 | 0.93 | 0.83 | 0.76 | 0.47 |
+| All | Last hour | 1856 | 63% | 0.86 | 0.58 | 0.69 | 0.68 | 0.83 |
+| All | Average of last 24 h | 1856 | 63% | 0.84 | 0.82 | 0.83 | 0.79 | 0.73 |
+| All | Same hour yesterday | 1856 | 63% | 0.84 | 0.82 | 0.83 | 0.79 | 0.73 |
+
+### Within 3h (all quotas: 2458 labelled starts, 298 not labelable)
+
+Confusion matrix, Global model:
+
+| | Actually reached | Not reached |
+|---|---|---|
+| **Alert** | 303 (TP) | 227 (FP) |
+| **No alert** | 110 (FN) | 1818 (TN) |
+
+| Quota | Method | Starts | Positives | Precision | Recall | F1 | Accuracy | Specificity |
+|---|---|---|---|---|---|---|---|---|
+| 100 MB | Global Tweedie model | 631 | 49% | 0.59 | 0.94 | 0.72 | 0.64 | 0.35 |
+| 100 MB | Last hour | 631 | 49% | 0.84 | 0.74 | 0.79 | 0.80 | 0.86 |
+| 100 MB | Average of last 24 h | 631 | 49% | 0.71 | 0.83 | 0.76 | 0.75 | 0.66 |
+| 100 MB | Same hour yesterday | 631 | 49% | 0.71 | 0.74 | 0.72 | 0.72 | 0.70 |
+| 500 MB | Global Tweedie model | 607 | 15% | 0.32 | 0.11 | 0.17 | 0.83 | 0.96 |
+| 500 MB | Last hour | 607 | 15% | 0.42 | 0.44 | 0.43 | 0.83 | 0.89 |
+| 500 MB | Average of last 24 h | 607 | 15% | 0.62 | 0.59 | 0.61 | 0.89 | 0.94 |
+| 500 MB | Same hour yesterday | 607 | 15% | 0.48 | 0.52 | 0.50 | 0.85 | 0.90 |
+| 1 GB | Global Tweedie model | 605 | 2% | – | 0.00 | – | 0.98 | 1.00 |
+| 1 GB | Last hour | 605 | 2% | 0.05 | 0.09 | 0.06 | 0.95 | 0.96 |
+| 1 GB | Average of last 24 h | 605 | 2% | 0.00 | 0.00 | – | 0.96 | 0.98 |
+| 1 GB | Same hour yesterday | 605 | 2% | 0.00 | 0.00 | – | 0.95 | 0.97 |
+| 3 GB | Global Tweedie model | 615 | 0% | – | – | – | 1.00 | 1.00 |
+| 3 GB | Last hour | 615 | 0% | – | – | – | 1.00 | 1.00 |
+| 3 GB | Average of last 24 h | 615 | 0% | – | – | – | 1.00 | 1.00 |
+| 3 GB | Same hour yesterday | 615 | 0% | – | – | – | 1.00 | 1.00 |
+| All | Global Tweedie model | 2458 | 17% | 0.57 | 0.73 | 0.64 | 0.86 | 0.89 |
+| All | Last hour | 2458 | 17% | 0.69 | 0.66 | 0.67 | 0.89 | 0.94 |
+| All | Average of last 24 h | 2458 | 17% | 0.67 | 0.76 | 0.71 | 0.90 | 0.93 |
+| All | Same hour yesterday | 2458 | 17% | 0.63 | 0.68 | 0.65 | 0.88 | 0.92 |
+
+
 ## Feature importance (gain, final model)
 
 | Feature | Gain share |
@@ -137,3 +206,4 @@ Counts are the app's hourly runs that made a forecast (including hours never mea
 - **actual_pet**: measured cumulative from the start hour; long NSM windows add their spread total; scored only if the crossing falls in an observed hour
 - **error_sign**: projected - actual in hours; positive = late
 - **beyond_horizon**: a projection that never reaches the quota in 720 h is scored as start + 720 h
+- **alerts**: every start hour and quota; predicted = the projection reaches the quota within W h (AlertRules: 24 h, 3 h); actual = measured usage reached it within W h; starts the data cannot label (a long NSM window across the boundary, a hole, or the data ending) are left out

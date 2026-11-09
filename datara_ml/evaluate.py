@@ -47,7 +47,18 @@ and are scored on the same rows and cycles.
    user would have seen (``local_switched``), and for the local layer in shadow wherever it was
    ready (``local_shadow``, on those rows/cycles only, compared with Global on the same subset).
 
-4. **Feature importance** (gain) of the final model, fitted on every device with the same tuning
+4. **Forecast alerts as classification** (the app's D8 ``forecast_24h`` / ``forecast_3h``,
+   ``AlertRules.kt``: an alert when the PET is within 24 h / 3 h). At every start hour and quota,
+   each method's projection is a yes/no prediction ("the quota will be reached within W hours"),
+   and the measured usage gives the actual answer (:func:`alert_label`). Unlike the PET error,
+   negatives count too: a start whose quota was *not* reached within W hours is a true negative
+   or a false alarm. Reported per horizon and quota: the confusion matrix (TP, FP, FN, TN),
+   precision, recall, F1, accuracy and specificity, for the Global model and the baselines.
+   Labels follow the same measurement rules as the actual PET: usage inside long NSM windows is
+   exact only at the end of the window, so a start is left out (``unknown``) when the window
+   holding the crossing straddles the W-hour boundary, or the data has a hole or ends first.
+
+5. **Feature importance** (gain) of the final model, fitted on every device with the same tuning
    as ``train_v0`` (so the same model as the bundled one for the same data).
 
 Outputs go to ``artifacts/eval/``: ``report.json``, ``report.md`` (tables for Chapter 4) and PNG
@@ -92,6 +103,8 @@ LABELS = {
     "global_on_ready": "Global, same rows/cycles",
 }
 WITHIN_HOURS = (3, 24)
+# The forecast alerts (AlertRules.kt FORECAST_24H_MS / FORECAST_3H_MS): "PET within W hours"
+ALERT_HORIZONS = (24, 3)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -164,12 +177,50 @@ def actual_crossing(observed: History, known: dict[int, float], start_ms: int, q
     return Crossing("never_crossed")
 
 
+def alert_label(observed: History, known: dict[int, float], start_ms: int, quota_bytes: float,
+                last_hour_ms: int, hours: int) -> bool | None:
+    """Did measured usage from ``start_ms`` reach ``quota_bytes`` within ``hours`` hours? None when
+    the data cannot tell.
+
+    Observed hours are exact. A run of unobserved hours inside long NSM windows (``known``) is exact
+    only at its end: if the cumulative reaches the quota inside a run, the answer is known when the
+    whole run lies before the boundary (True) or after it (False), and unknown when it straddles it.
+    A run that ends below the quota after the boundary proves False (usage only grows). A hole in the
+    data, or the data ending, before the answer is known gives None.
+    """
+    cumulative = 0.0
+    k = 0
+    while True:
+        if k >= hours:
+            return False
+        h = start_ms + k * HOUR_MS
+        if h > last_hour_ms:
+            return None
+        if h in observed:
+            cumulative += observed[h].mobile_bytes
+            if cumulative >= quota_bytes and observed[h].mobile_bytes > 0:
+                return True
+            k += 1
+            continue
+        if h not in known:
+            return None
+        while start_ms + k * HOUR_MS in known and start_ms + k * HOUR_MS not in observed \
+                and start_ms + k * HOUR_MS <= last_hour_ms:
+            cumulative += known[start_ms + k * HOUR_MS]
+            k += 1
+        last = k - 1
+        if cumulative >= quota_bytes:
+            return True if last < hours else None
+        # Below the quota at the end of the run: nothing was reached within it
+
+
 # ---------------------------------------------------------------------------------------------
 # Projection: one trajectory serves every quota
 # ---------------------------------------------------------------------------------------------
 
 def trajectory(history: History, start_ms: int, max_quota_bytes: float,
-               predict: Callable[[np.ndarray], float], offset_ms: int = PH_OFFSET_MS) -> list[float]:
+               predict: Callable[[np.ndarray], float], offset_ms: int = PH_OFFSET_MS,
+               horizon_hours: int = PROJECTION_HORIZON_HOURS) -> list[float]:
     """The hourly predictions ``features.project()`` makes from ``start_ms`` until it reaches
     ``max_quota_bytes`` (or the 30-day horizon). The predictions do not depend on the quota, so
     :func:`reach_from_trajectory` gives the same PET as ``project()`` for every smaller quota."""
@@ -180,7 +231,7 @@ def trajectory(history: History, start_ms: int, max_quota_bytes: float,
         seen.append(b)
         return b
 
-    project(history, start_ms, max_quota_bytes, recording, offset_ms)
+    project(history, start_ms, max_quota_bytes, recording, offset_ms, horizon_hours)
     return seen
 
 
@@ -481,6 +532,33 @@ def pet_metrics(errors_h: np.ndarray, devices: np.ndarray | None = None,
     return out
 
 
+def alert_metrics(actual: np.ndarray, predicted: np.ndarray) -> dict:
+    """Confusion matrix and the usual classification scores; a score is NaN when undefined
+    (e.g. precision with no alert at all)."""
+    a, p = np.asarray(actual, bool), np.asarray(predicted, bool)
+    if len(a) == 0:
+        return {"n": 0}
+    tp, fp = int(np.sum(a & p)), int(np.sum(~a & p))
+    fn, tn = int(np.sum(a & ~p)), int(np.sum(~a & ~p))
+
+    def div(x, y):
+        return x / y if y else float("nan")
+
+    precision, recall = div(tp, tp + fp), div(tp, tp + fn)
+    f1 = (2 * precision * recall / (precision + recall)
+          if not (math.isnan(precision) or math.isnan(recall)) and precision + recall > 0 else float("nan"))
+    return {"n": int(len(a)), "tp": tp, "fp": fp, "fn": fn, "tn": tn,
+            "precision": precision, "recall": recall, "f1": f1,
+            "accuracy": (tp + tn) / len(a), "specificity": div(tn, tn + fp),
+            "positive_share": float(a.mean())}
+
+
+def predicted_within(bs: list[float], start_ms: int, quota_bytes: float, hours: int) -> bool:
+    """The app's alert test on a projection: the PET is at most ``hours`` after the forecast hour."""
+    reach = reach_from_trajectory(bs, start_ms, quota_bytes, horizon_hours=hours)
+    return reach is not None and reach - start_ms <= hours * HOUR_MS
+
+
 # ---------------------------------------------------------------------------------------------
 # The evaluation
 # ---------------------------------------------------------------------------------------------
@@ -520,6 +598,15 @@ class PetContext:
         if key not in self._cache:
             self._cache[key] = {q: actual_crossing(self.histories[device], self.known.get(device, {}), start_ms, q,
                                                    self.last_hour[device]) for q in self.quotas}
+        return self._cache[key]
+
+    def alert_labels(self, device: str, start_ms: int) -> dict[tuple[float, int], bool | None]:
+        """:func:`alert_label` for every quota and alert horizon (cached; model-independent)."""
+        key = ("alert", device, start_ms)
+        if key not in self._cache:
+            self._cache[key] = {(q, w): alert_label(self.histories[device], self.known.get(device, {}), start_ms, q,
+                                                    self.last_hour[device], w)
+                                for q in self.quotas for w in ALERT_HORIZONS}
         return self._cache[key]
 
     def errors(self, predict_batch: Callable[[np.ndarray], np.ndarray], devices, stride: int = 1) -> np.ndarray:
@@ -580,6 +667,7 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
     ctx = pet_context(hourly, known, quotas_mb, offset_ms)
 
     row_records, cycle_records, skipped, device_rows, params_per_fold = [], [], [], [], []
+    alert_records, alert_unknown = [], []
     for fold, held in enumerate(tv.device_folds(devices, k=min(folds, len(set(devices))))):
         te = np.isin(devices, held)
         params = fixed_params if fixed_params is not None else tv.tune(train[~te], "tweedie", pet=ctx)
@@ -612,6 +700,25 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
                 for name in NEXT_HOUR_METHODS[1:]:
                     rec[name] = baseline_bytes(name, xs)
                 row_records.append(rec)
+
+                # Forecast alerts: every method's projection over the next 24 h as a yes/no prediction
+                labels_now = ctx.alert_labels(device, r.hour_ms)
+                for (q, w), lab in labels_now.items():
+                    if lab is None:
+                        alert_unknown.append({"quota_mb": q / 1e6, "horizon_h": w})
+                if any(lab is not None for lab in labels_now.values()):
+                    horizon = max(ALERT_HORIZONS)
+                    short = {"global": trajectory(hist, r.hour_ms, max_q, g_pred, offset_ms, horizon)}
+                    for name in PET_METHODS[1:]:
+                        short[name] = trajectory(hist, r.hour_ms, max_q, pet_predictor(name), offset_ms, horizon)
+                    for (q, w), lab in labels_now.items():
+                        if lab is None:
+                            continue
+                        rec = {"device": labels[device], "start_ms": r.hour_ms, "quota_mb": q / 1e6,
+                               "horizon_h": w, "actual": lab}
+                        for name, bs in short.items():
+                            rec[name] = predicted_within(bs, r.hour_ms, q, w)
+                        alert_records.append(rec)
 
                 crossings = ctx.crossings(device, r.hour_ms)
                 for q, c in crossings.items():
@@ -648,8 +755,27 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
     cycles = pd.DataFrame(cycle_records)
     skipped_df = pd.DataFrame(skipped, columns=["quota_mb", "reason"])
     report = _summarize(train, rows, cycles, skipped_df, device_rows, quotas_mb, params_per_fold, folds)
-    report["_rows"], report["_cycles"] = rows, cycles
+    alerts = pd.DataFrame(alert_records, columns=["device", "start_ms", "quota_mb", "horizon_h", "actual", *PET_METHODS])
+    report["alerts"] = alert_summary(alerts, pd.DataFrame(alert_unknown, columns=["quota_mb", "horizon_h"]), quotas_mb)
+    report["_rows"], report["_cycles"], report["_alerts"] = rows, cycles, alerts
     return report
+
+
+def alert_summary(alerts: pd.DataFrame, unknown: pd.DataFrame, quotas_mb) -> dict:
+    """Per alert horizon and quota (and all quotas): :func:`alert_metrics` per method, plus how many
+    start hours were labelled and how many the data could not label."""
+    out = {}
+    for w in ALERT_HORIZONS:
+        by_q = {}
+        for q in [*quotas_mb, "all"]:
+            a = alerts[alerts["horizon_h"] == w]
+            u = unknown[unknown["horizon_h"] == w]
+            if q != "all":
+                a, u = a[a["quota_mb"] == q], u[u["quota_mb"] == q]
+            by_q[str(q)] = {"labelled": int(len(a)), "unknown": int(len(u)),
+                            **{m: alert_metrics(a["actual"].to_numpy(bool), a[m].to_numpy(bool)) for m in PET_METHODS}}
+        out[f"{w}h"] = by_q
+    return out
 
 
 def _summarize(train, rows, cycles, skipped, device_rows, quotas_mb, params_per_fold, folds) -> dict:
@@ -715,6 +841,9 @@ def _summarize(train, rows, cycles, skipped, device_rows, quotas_mb, params_per_
                           "scored only if the crossing falls in an observed hour",
             "error_sign": "projected - actual in hours; positive = late",
             "beyond_horizon": "a projection that never reaches the quota in 720 h is scored as start + 720 h",
+            "alerts": "every start hour and quota; predicted = the projection reaches the quota within W h "
+                      "(AlertRules: 24 h, 3 h); actual = measured usage reached it within W h; starts the data "
+                      "cannot label (a long NSM window across the boundary, a hole, or the data ending) are left out",
         },
     }
 
@@ -833,6 +962,37 @@ def markdown(report: dict) -> str:
         L.append(f"| {name} | {r.get('n', 0)} | {_f(r.get('mae_h'))} | {_f(r.get('median_abs_h'))} | "
                  f"{_f(r.get('within_24h'), pct=True)} | {_f(r.get('bias_h'))} |")
 
+    alerts = report.get("alerts")
+    if alerts:
+        L.append("\n## Forecast alerts as classification\n")
+        L.append("The app warns when the PET is within 24 h or within 3 h (D8). At every forecast hour and quota "
+                 "of a held-out device, each method's projection is a yes/no prediction, scored against whether "
+                 "measured usage really reached the quota within that time. Positive = reached within the "
+                 "horizon. Precision: when it warned, was it right? Recall: of the times the quota was about to "
+                 "be reached, how often did it warn?\n")
+        for hz, by in alerts.items():
+            g = by["all"]
+            L.append(f"### Within {hz} (all quotas: {g['labelled']} labelled starts, {g['unknown']} not labelable)\n")
+            gm = g["global"]
+            if gm.get("n"):
+                L.append("Confusion matrix, Global model:\n")
+                L.append("| | Actually reached | Not reached |")
+                L.append("|---|---|---|")
+                L.append(f"| **Alert** | {gm['tp']} (TP) | {gm['fp']} (FP) |")
+                L.append(f"| **No alert** | {gm['fn']} (FN) | {gm['tn']} (TN) |\n")
+            L.append("| Quota | Method | Starts | Positives | Precision | Recall | F1 | Accuracy | Specificity |")
+            L.append("|---|---|---|---|---|---|---|---|---|")
+            for q, row in by.items():
+                for m in PET_METHODS:
+                    r = row[m]
+                    if not r.get("n"):
+                        L.append(f"| {_quota(q)} | {LABELS[m]} | 0 | – | – | – | – | – | – |")
+                        continue
+                    L.append(f"| {_quota(q)} | {LABELS[m]} | {r['n']} | {_f(r['positive_share'], pct=True)} | "
+                             f"{_f(r['precision'], 2)} | {_f(r['recall'], 2)} | {_f(r['f1'], 2)} | "
+                             f"{_f(r['accuracy'], 2)} | {_f(r['specificity'], 2)} |")
+            L.append("")
+
     L.append("\n## Feature importance (gain, final model)\n")
     L.append("| Feature | Gain share |")
     L.append("|---|---|")
@@ -887,8 +1047,9 @@ def figures(report: dict, out: Path) -> list[str]:
 
     written = []
 
-    def save(fig, name):
-        fig.tight_layout()
+    def save(fig, name, layout=True):
+        if layout:
+            fig.tight_layout()
         fig.savefig(out / name, dpi=200, facecolor="white")
         plt.close(fig)
         written.append(name)
@@ -947,7 +1108,45 @@ def figures(report: dict, out: Path) -> list[str]:
         _style(ax, "Global model: projected vs actual PET", "projected hours")
         save(fig, "pet_projected_vs_actual.png")
 
-    # 5. Feature importance
+    # 5. Forecast alerts: Global confusion matrices, and precision / recall / F1 per method
+    alerts = report.get("alerts")
+    if alerts and any(alerts[h]["all"]["global"].get("n") for h in alerts):
+        hz = list(alerts)
+        fig, axes = plt.subplots(1, len(hz), figsize=(3.4 * len(hz), 3.2))
+        axes = np.atleast_1d(axes)
+        for ax, h in zip(axes, hz):
+            r = alerts[h]["all"]["global"]
+            m = np.array([[r.get("tp", 0), r.get("fp", 0)], [r.get("fn", 0), r.get("tn", 0)]], float)
+            ax.imshow(m, cmap="Blues", vmin=0, vmax=max(1.0, m.max()))
+            for (i, j), v in np.ndenumerate(m):
+                ax.text(j, i, f"{int(v)}\n{['TP', 'FP', 'FN', 'TN'][i * 2 + j]}", ha="center", va="center",
+                        fontsize=9, color="white" if v > m.max() / 2 else INK)
+            ax.set_xticks([0, 1], ["reached", "not reached"], fontsize=8)
+            ax.set_yticks([0, 1], ["alert", "no alert"], fontsize=8)
+            ax.set_title(f"Within {h}, Global (all quotas)", loc="left", fontsize=10, color=INK)
+            for sp in ax.spines.values():
+                sp.set_visible(False)
+        save(fig, "alert_confusion.png")
+
+        fig, axes = plt.subplots(1, len(hz), figsize=(4.2 * len(hz), 3.8), sharey=True)
+        axes = np.atleast_1d(axes)
+        keys = ("precision", "recall", "f1")
+        for ax, h in zip(axes, hz):
+            w = 0.8 / len(PET_METHODS)
+            for i, m in enumerate(PET_METHODS):
+                vals = [alerts[h]["all"][m].get(k, np.nan) for k in keys]
+                ax.bar(np.arange(len(keys)) + (i - (len(PET_METHODS) - 1) / 2) * w, vals, w * 0.92,
+                       color=COLORS[m], label=LABELS[m])
+            ax.set_xticks(range(len(keys)), ["Precision", "Recall", "F1"], fontsize=9)
+            ax.set_ylim(0, 1)
+            _style(ax, f"Alerts within {h} (all quotas)", "score")
+        # One legend under both panels, so it never covers a bar
+        handles, names = axes[0].get_legend_handles_labels()
+        fig.legend(handles, names, loc="lower center", ncol=len(PET_METHODS), frameon=False, fontsize=8)
+        fig.tight_layout(rect=(0, 0.08, 1, 1))
+        save(fig, "alert_scores.png", layout=False)
+
+    # 6. Feature importance
     gain = report["importance"]["gain_share"]
     names = list(gain)[::-1]
     fig, ax = plt.subplots(figsize=(6.4, 4))
@@ -1021,6 +1220,11 @@ def main(argv: list[str] | None = None) -> int:
     for q, by in report["pet"].items():
         line = "  ".join(f"{m} {by[m]['mae_h']:.1f}h" for m in PET_METHODS if by[m].get("n"))
         print(f"PET {_quota(q):6s} n={by['global'].get('n', 0):4d}  {line}")
+    for hz, by in report["alerts"].items():
+        g = by["all"]["global"]
+        if g.get("n"):
+            print(f"alerts within {hz}: n={g['n']} TP {g['tp']} FP {g['fp']} FN {g['fn']} TN {g['tn']}  "
+                  f"precision {g['precision']:.2f} recall {g['recall']:.2f} F1 {g['f1']:.2f}")
     e3 = report["e3"]
     print(f"E3: {e3['devices_reaching_168_learned_hours']} devices reached 168 learned hours, "
           f"{e3['devices_switched_to_local']} switched to Local")
