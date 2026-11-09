@@ -46,6 +46,50 @@ class CrossingTest(unittest.TestCase):
         self.assertEqual(ev.actual_crossing(hist, known, T0, 100e6, T0 + 2 * HOUR_MS).status, "unknown_gap")
         self.assertEqual(ev.actual_crossing(hist, known, T0, 5e9, T0 + 0 * HOUR_MS).status, "never_crossed")
 
+    def test_alert_label_observed_hours(self):
+        hist = hist_of({k: 10e6 for k in range(30)})
+        known = {h: s.mobile_bytes for h, s in hist.items()}
+        last = T0 + 29 * HOUR_MS
+        self.assertTrue(ev.alert_label(hist, known, T0, 30e6, last, 3))      # 3 x 10 MB by the end of hour 3
+        self.assertFalse(ev.alert_label(hist, known, T0, 31e6, last, 3))
+        self.assertTrue(ev.alert_label(hist, known, T0, 240e6, last, 24))
+        self.assertFalse(ev.alert_label(hist, known, T0, 250e6, last, 24))
+
+    def test_alert_label_long_windows_count_only_when_they_settle_it(self):
+        hist = hist_of({0: 10e6, 5: 10e6})
+        known = {h: s.mobile_bytes for h, s in hist.items()}
+        known.update({T0 + k * HOUR_MS: 20e6 for k in (1, 2, 3, 4)})   # an 80 MB window over hours 1-4
+        last = T0 + 5 * HOUR_MS
+        self.assertTrue(ev.alert_label(hist, known, T0, 50e6, last, 5))   # window ends inside 5 h, above 50 MB
+        self.assertIsNone(ev.alert_label(hist, known, T0, 50e6, last, 3))  # crossing somewhere in a window across 3 h
+        self.assertFalse(ev.alert_label(hist, known, T0, 95e6, last, 3))  # 90 MB at the window's end: not by 3 h either
+
+    def test_alert_label_unknown_when_the_data_cannot_tell(self):
+        hist = hist_of({0: 10e6, 2: 500e6})
+        known = {h: s.mobile_bytes for h, s in hist.items()}
+        self.assertIsNone(ev.alert_label(hist, known, T0, 100e6, T0 + 2 * HOUR_MS, 3))  # hole at hour 1
+        self.assertIsNone(ev.alert_label(hist, known, T0, 100e6, T0, 3))               # data ends
+        self.assertFalse(ev.alert_label(hist, known, T0, 100e6, T0 + 2 * HOUR_MS, 1))   # decided before the hole
+
+    def test_alert_metrics(self):
+        actual = np.array([1, 1, 1, 0, 0, 0, 0, 0], bool)
+        pred = np.array([1, 1, 0, 1, 0, 0, 0, 0], bool)
+        m = ev.alert_metrics(actual, pred)
+        self.assertEqual((m["tp"], m["fp"], m["fn"], m["tn"]), (2, 1, 1, 4))
+        self.assertAlmostEqual(m["precision"], 2 / 3)
+        self.assertAlmostEqual(m["recall"], 2 / 3)
+        self.assertAlmostEqual(m["f1"], 2 / 3)
+        self.assertAlmostEqual(m["accuracy"], 6 / 8)
+        self.assertAlmostEqual(m["specificity"], 4 / 5)
+        self.assertTrue(math.isnan(ev.alert_metrics(np.array([0, 0], bool), np.array([0, 0], bool))["precision"]))
+
+    def test_predicted_within_uses_the_projection(self):
+        bs = [10e6] * 24
+        self.assertTrue(ev.predicted_within(bs, T0, 30e6, 3))
+        self.assertFalse(ev.predicted_within(bs, T0, 35e6, 3))
+        self.assertTrue(ev.predicted_within(bs, T0, 35e6, 24))
+        self.assertFalse(ev.predicted_within(bs, T0, 300e6, 24))
+
     def test_known_hourly_spreads_long_windows_and_matches_nsm_on_observed_hours(self):
         def iso(ms):
             return pd.Timestamp(ms, unit="ms").strftime("%Y-%m-%dT%H:%M:%S")
@@ -196,11 +240,21 @@ class EvaluateEndToEndTest(unittest.TestCase):
         self.assertGreater(r["pet"]["50"]["global"]["n"], 0)
         c = r["pet_cycle_counts"]["50"]
         self.assertEqual(c["scored"] + c["crossing_unobserved"] + c["unknown_gap"] + c["never_crossed"], c["start_hours"])
+        for hz in ("24h", "3h"):
+            for q in ("50", "300", "all"):
+                by = r["alerts"][hz][q]
+                self.assertEqual({by[m]["n"] for m in ev.PET_METHODS}, {by["labelled"]})
+            g = r["alerts"][hz]["all"]["global"]
+            self.assertEqual(g["tp"] + g["fp"] + g["fn"] + g["tn"], g["n"])
+        self.assertGreater(r["alerts"]["24h"]["all"]["labelled"], 0)
+        self.assertEqual(r["alerts"]["24h"]["50"]["labelled"] + r["alerts"]["24h"]["50"]["unknown"],
+                         r["pet_cycle_counts"]["50"]["start_hours"])
 
     def test_outputs_are_written_without_device_ids(self):
         with tempfile.TemporaryDirectory() as tmp:
             written = ev.write_outputs(self.report, Path(tmp))
-            for name in ("report.json", "report.md", "pet_mae_by_quota.png", "feature_importance.png"):
+            for name in ("report.json", "report.md", "pet_mae_by_quota.png", "feature_importance.png",
+                         "alert_confusion.png", "alert_scores.png"):
                 self.assertIn(name, written)
                 self.assertTrue((Path(tmp) / name).stat().st_size > 0)
             text = (Path(tmp) / "report.json").read_text(encoding="utf-8") + (Path(tmp) / "report.md").read_text(encoding="utf-8")

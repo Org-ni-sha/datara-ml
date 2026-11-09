@@ -118,11 +118,12 @@ The bundled `v0-tweedie-pet-2026-11-07` (contract v4, second 2026-11-06 export, 
 1. **Next hour**: MAE / RMSE (MB), R² and predicted ÷ actual total for the Global model and three baselines (last hour, average of the last 24 h, same hour yesterday).
 2. **PET error (the thesis metric)** on simulated quota cycles: a cycle starts at every hour the app would show a forecast on a held-out device, with quotas of 100 MB, 500 MB, 1 GB and 3 GB. The projected PET is `features.project()`, the app's rule; the actual PET is when measured usage from that hour crossed the quota. Reported: MAE, median, share within ±3 h and ±24 h, and bias in hours (positive = late), for the model and the baselines projected the same way (last hour repeated, 24 h average repeated, yesterday's profile repeated).
 3. **E3, Global vs Local**: the app's local layer (`LocalLayer.kt`: usage ratio per 6-hour block, 0.2–5×, switch after 168 learned hours when ≥ 5% better) replayed hour by hour on each held-out device.
-4. Feature importance (gain) of the final model, and a sensitivity check with the final model's hyperparameters fixed in every fold.
+4. **Forecast alerts as classification** (Chapter 3's classification metrics): the app's D8 alerts fire when the PET is within 24 h or 3 h. At every start hour and quota, each method's projection is a yes/no prediction ("reached within W hours"), scored against whether measured usage really reached the quota within W hours. Unlike the PET error, negatives count: a start that did *not* reach the quota is a true negative or a false alarm. Reported per horizon and quota: the confusion matrix (TP, FP, FN, TN), precision, recall, F1, accuracy and specificity, for the model and the baselines. A start is left out when the data cannot tell, e.g. a long NSM window holding the crossing straddles the boundary (counted as "not labelable").
+5. Feature importance (gain) of the final model, and a sensitivity check with the final model's hyperparameters fixed in every fold.
 
 **Which simulated cycles count.** Usage is added up hour by hour from the start hour. Hours inside NSM windows longer than 2 hours are unobserved, but the window's total is known, so they add their share of it and the running total is exact again at the window's end. A cycle is scored only when the crossing falls in an **observed** hour. It is skipped, and counted by reason in the report, when the crossing falls in an unobserved hour, an hour on the way has no NSM total at all, or the data ends first. A projection that never reaches the quota within 30 days is scored as start + 720 h (late).
 
-Run it for the Nov 11 final model, **after** the two training commands above (same exports in `data/`):
+Run it for the final model (Nov 11 rehearsal, Nov 12 final), **after** the two training commands above (same exports in `data/`):
 
 ```bash
 python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
@@ -130,7 +131,7 @@ python -m datara_ml.train_v0 --train data/train.csv --apps data/app_usage_record
 python -m datara_ml.evaluate --apps data/app_usage_records.csv --usage data/usage_records.csv --train data/train.csv
 ```
 
-Training takes about 2 minutes and the evaluation about 5 (more with more data). Hyperparameters are chosen by PET error in both, with every 3rd start hour scored (`PET_TUNE_STRIDE`). The evaluation writes to `artifacts/eval/`: `report.json` (every number), `report.md` (the Chapter 4 tables) and the figures `next_hour_error.png`, `pet_mae_by_quota.png`, `pet_signed_error.png`, `pet_projected_vs_actual.png` and `feature_importance.png`. Devices appear only as D01, D02, … (in order of their first hour), so these files may be committed. `--train` only checks that `data/train.csv` was built from the same exports. For a quick run without tuning, pass `--fixed-params '{"tweedie_variance_power": 1.9, "max_depth": 2, "n_estimators": 150}'`.
+Training takes about 2 minutes and the evaluation about 5 (more with more data). Hyperparameters are chosen by PET error in both, with every 3rd start hour scored (`PET_TUNE_STRIDE`). The evaluation writes to `artifacts/eval/`: `report.json` (every number), `report.md` (the Chapter 4 tables) and the figures `next_hour_error.png`, `pet_mae_by_quota.png`, `pet_signed_error.png`, `pet_projected_vs_actual.png`, `alert_confusion.png` (Global confusion matrices), `alert_scores.png` (precision / recall / F1 per method) and `feature_importance.png`. Devices appear only as D01, D02, … (in order of their first hour), so these files may be committed. `--train` only checks that `data/train.csv` was built from the same exports. For a quick run without tuning, pass `--fixed-params '{"tweedie_variance_power": 1.9, "max_depth": 2, "n_estimators": 150}'`.
 
 **Preliminary result (second 2026-11-06 export, 689 hours, 17 devices; `artifacts/eval/`).** PET error is over 1,367 scored cycles from 13 devices (all quotas). Positive bias means late.
 
@@ -142,6 +143,8 @@ Training takes about 2 minutes and the evaluation about 5 (more with more data).
 | Before: shipped power 1.9 (RMSE-selected), fixed in every fold | 56.2 | 101.1 | 5.0 | 74% | +87.5 | 186 |
 | Baseline: average of last 24 h, repeated | 65.8 | 47.1 | 6.7 | 72% | +35.0 | 50 |
 | Baseline: last hour, repeated | 62.3 | 246.4 | 22.7 | 51% | +239.6 | 450 |
+
+**Forecast alerts (same run, nested, all quotas).** Within 24 h: 1,856 labelled starts, precision 0.75, recall 0.93, F1 0.83 (TP 1,093, FP 363, FN 82, TN 318); the 24 h average baseline also reaches F1 0.83 with higher precision (0.84) and lower recall (0.82). Within 3 h: 2,458 starts, precision 0.57, recall 0.73, F1 0.64, against F1 0.71 for the 24 h average. The model warns early, in line with its negative PET bias: few missed warnings, more false alarms. Its clear advantage stays the PET error.
 
 Read the table with these in mind:
 
