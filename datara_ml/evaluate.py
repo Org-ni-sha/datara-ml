@@ -1,14 +1,16 @@
 """B4/E3 evaluation: next-hour error, PET error on simulated quota cycles, and Global vs Local.
 
 Everything is scored with **whole devices held out**: the devices are split into the same 5
-grouped folds as ``train_v0`` (``device_folds``, seed 0). For each fold the Global Tweedie model is
-tuned (``train_v0.tune``, inner device folds on the training devices only) and fitted on the other
-folds, then every held-out device is replayed hour by hour. The naive baselines need no training
-and are scored on the same rows and cycles.
+grouped folds as ``train_v0`` (``device_folds``, seed 0). For each fold the Global XGBoost model
+(Tweedie objective) is tuned (``train_v0.tune``, inner device folds on the training devices only)
+and fitted on the other folds, then every held-out device is replayed hour by hour. A linear
+regression on the same 12 features is fitted on the same training folds (:class:`LinearModel`), and
+the naive baselines need no training; all are scored on the same rows and cycles.
 
 1. **Next hour** (the training rows of ``features.build_training_set``: observed hours with at
    least 6 observed hours in the previous 24): MAE / RMSE in MB, R² (bytes and log1p), and
-   predicted ÷ actual total, for the Global model and three baselines:
+   predicted ÷ actual total, for the Global model, ``linear`` (ordinary least squares on the same
+   features, predicting next-hour bytes, see :class:`LinearModel`) and three baselines:
 
    * ``last_hour``: the last hour's bytes (missing → 24 h average → 0)
    * ``last_24h_avg``: the average of the observed hours among the last 24
@@ -35,7 +37,8 @@ and are scored on the same rows and cycles.
    Error = projected − actual, in hours: **positive = late** (the PET came after the quota was
    really reached, the bad direction for a warning). A projection that does not reach ``Q`` in 30
    days is scored as the horizon end (``start + 720 h``), so it counts as late, and is also counted
-   in ``beyond_horizon``. Methods projected the same way: the Global model, ``last_hour``
+   in ``beyond_horizon``. Methods projected the same way: the Global model, ``linear`` (its own
+   predictions feed its lags, like the Global model's), ``last_hour``
    (repeated), ``last_24h_avg`` (repeated: a constant consumption rate) and
    ``same_hour_yesterday`` (yesterday's profile repeated, through the projection's own lags).
 
@@ -76,6 +79,7 @@ import copy
 import json
 import math
 import sys
+import textwrap
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -91,10 +95,13 @@ from datara_ml.features import (
 from datara_ml.nsm_hourly import Window, _hour_bytes
 
 QUOTAS_MB = (100, 500, 1000, 3000)
-NEXT_HOUR_METHODS = ("global", "last_hour", "last_24h_avg", "same_hour_yesterday")
+LINEAR = "linear"
+BASELINES = ("last_hour", "last_24h_avg", "same_hour_yesterday")
+NEXT_HOUR_METHODS = ("global", LINEAR, *BASELINES)
 PET_METHODS = NEXT_HOUR_METHODS
 LABELS = {
-    "global": "Global Tweedie model",
+    "global": "Global XGBoost (Tweedie)",
+    LINEAR: "Linear regression",
     "last_hour": "Last hour",
     "last_24h_avg": "Average of last 24 h",
     "same_hour_yesterday": "Same hour yesterday",
@@ -324,6 +331,49 @@ def pet_predictor(name: str) -> Callable[[np.ndarray], float]:
     if name in ("last_hour", "last_24h_avg"):
         return repeated_first(lambda x: baseline_bytes(name, x))
     return lambda x: baseline_bytes(name, x)
+
+
+# ---------------------------------------------------------------------------------------------
+# Linear regression: the simple learned model the Global XGBoost model is compared with
+# ---------------------------------------------------------------------------------------------
+
+@dataclass
+class LinearModel:
+    """Ordinary least squares on the 12 contract features, predicting next-hour **bytes** (the same
+    target as the Tweedie model), clipped at 0 because a line can go negative.
+
+    XGBoost handles missing features itself; a linear model cannot, so a missing value (e.g. no
+    "same hour last week" yet) is replaced by that feature's median on the training rows, and every
+    feature that was missing in training gets a 0/1 "was missing" column, so the model can still
+    tell a filled value from a real one. Nothing is tuned: there are no hyperparameters.
+    """
+    medians: np.ndarray
+    missing_cols: np.ndarray
+    coef: np.ndarray
+
+    @staticmethod
+    def _design(x: np.ndarray, medians: np.ndarray, missing_cols: np.ndarray) -> np.ndarray:
+        x = np.asarray(x, np.float64).reshape(-1, len(medians))
+        nan = np.isnan(x)
+        filled = np.where(nan, medians, x)
+        return np.hstack([np.ones((len(x), 1)), filled, nan[:, missing_cols].astype(np.float64)])
+
+    @classmethod
+    def fit(cls, x: np.ndarray, y_bytes: np.ndarray) -> "LinearModel":
+        x = np.asarray(x, np.float64)
+        with np.errstate(all="ignore"):
+            medians = np.nanmedian(np.where(np.isnan(x).all(axis=0), 0.0, x), axis=0)
+        medians = np.nan_to_num(medians)
+        missing_cols = np.flatnonzero(np.isnan(x).any(axis=0))
+        design = cls._design(x, medians, missing_cols)
+        coef, *_ = np.linalg.lstsq(design, np.asarray(y_bytes, np.float64), rcond=None)
+        return cls(medians, missing_cols, coef)
+
+    def predict(self, x: np.ndarray) -> np.ndarray:
+        return np.maximum(0.0, self._design(x, self.medians, self.missing_cols) @ self.coef)
+
+    def predictor(self) -> Callable[[np.ndarray], float]:
+        return lambda x: float(self.predict(x)[0])
 
 
 # ---------------------------------------------------------------------------------------------
@@ -675,6 +725,7 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
         x, y = tv._xy(train[~te])
         model = tv.TweedieModel(**params).fit(x, y)
         g_pred = booster_predictor(model)
+        lin_pred = LinearModel.fit(x, y).predictor()
         progress(f"fold {fold + 1}: {len(held)} devices held out, params {params}")
 
         for device in sorted(held):
@@ -697,7 +748,8 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
                        "global": r.global_bytes, "local_shadow": r.local_bytes,
                        "local_switched": r.local_bytes if shown_local else r.global_bytes,
                        "local_active": shown_local}
-                for name in NEXT_HOUR_METHODS[1:]:
+                rec[LINEAR] = lin_pred(xs)
+                for name in BASELINES:
                     rec[name] = baseline_bytes(name, xs)
                 row_records.append(rec)
 
@@ -708,8 +760,9 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
                         alert_unknown.append({"quota_mb": q / 1e6, "horizon_h": w})
                 if any(lab is not None for lab in labels_now.values()):
                     horizon = max(ALERT_HORIZONS)
-                    short = {"global": trajectory(hist, r.hour_ms, max_q, g_pred, offset_ms, horizon)}
-                    for name in PET_METHODS[1:]:
+                    short = {"global": trajectory(hist, r.hour_ms, max_q, g_pred, offset_ms, horizon),
+                             LINEAR: trajectory(hist, r.hour_ms, max_q, lin_pred, offset_ms, horizon)}
+                    for name in BASELINES:
                         short[name] = trajectory(hist, r.hour_ms, max_q, pet_predictor(name), offset_ms, horizon)
                     for (q, w), lab in labels_now.items():
                         if lab is None:
@@ -727,8 +780,9 @@ def evaluate(hourly: pd.DataFrame, known: dict[str, dict[int, float]], quotas_mb
                 scored = [q for q, c in crossings.items() if c.status == "crossed"]
                 if not scored:
                     continue
-                trajs = {"global": trajectory(hist, r.hour_ms, max_q, g_pred, offset_ms)}
-                for name in PET_METHODS[1:]:
+                trajs = {"global": trajectory(hist, r.hour_ms, max_q, g_pred, offset_ms),
+                         LINEAR: trajectory(hist, r.hour_ms, max_q, lin_pred, offset_ms)}
+                for name in BASELINES:
                     trajs[name] = trajectory(hist, r.hour_ms, max_q, pet_predictor(name), offset_ms)
                 if r.local_bytes is not None:
                     trajs["local_shadow"] = trajectory(
@@ -1023,7 +1077,7 @@ def _quota(q: str) -> str:
 
 
 # Reference categorical palette (dataviz skill, light mode), fixed order per method
-COLORS = {"global": "#2a78d6", "last_hour": "#eb6834", "last_24h_avg": "#1baf7a",
+COLORS = {"global": "#2a78d6", LINEAR: "#9a4fc4", "last_hour": "#eb6834", "last_24h_avg": "#1baf7a",
           "same_hour_yesterday": "#eda100", "local_switched": "#6250d6", "local_shadow": "#6250d6"}
 INK, INK2, GRID = "#0b0b0b", "#52514e", "#e4e3df"
 
@@ -1055,12 +1109,13 @@ def figures(report: dict, out: Path) -> list[str]:
         written.append(name)
 
     # 1. Next-hour MAE and RMSE
-    fig, axes = plt.subplots(1, 2, figsize=(8, 3.2))
+    fig, axes = plt.subplots(1, 2, figsize=(9, 3.6))
     for ax, key, title in ((axes[0], "mae_mb", "Next-hour MAE"), (axes[1], "rmse_mb", "Next-hour RMSE")):
         vals = [report["next_hour"][m].get(key, 0) for m in NEXT_HOUR_METHODS]
         bars = ax.bar(range(len(vals)), vals, color=[COLORS[m] for m in NEXT_HOUR_METHODS], width=0.6)
         ax.bar_label(bars, fmt="%.1f", fontsize=8, color=INK2)
-        ax.set_xticks(range(len(vals)), [LABELS[m].replace(" ", "\n", 1) for m in NEXT_HOUR_METHODS], fontsize=8)
+        # Wrapped to narrow lines: five methods share each axis
+        ax.set_xticks(range(len(vals)), [textwrap.fill(LABELS[m], 10) for m in NEXT_HOUR_METHODS], fontsize=7.5)
         _style(ax, title, "MB")
     save(fig, "next_hour_error.png")
 
