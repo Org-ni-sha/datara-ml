@@ -2,7 +2,9 @@
 
 The ML pipeline for DATAra (ROADMAP track B): cleaning the data-harvester dataset, training the Global XGBoost next-hour model, and exporting it to ONNX.
 
-So far: the B1 phantom-spike repair and the B2 feature contract (with a placeholder model and the app's parity fixture). Training (B3) is done by the team on top of the contract.
+**Status (2026-11-17):** the pipeline is complete (ROADMAP B1–B5, E3). The app ships the final model **`final-2026-11-17`**, trained on the 2026-11-17 export (2,672 device-hours from 20 phones). Held out by device, its PET error is **10.2 h** on average against 79.4 h for repeating the last 24 hours, and its next-hour error is 46.0 MB (see "Final result" below and `artifacts/eval/report.md`).
+
+**For a guided tour,** open [`notebooks/walkthrough.ipynb`](notebooks/walkthrough.ipynb): features, model, every evaluation table and figure, and one forecast run through the ONNX model the way the phone does it. It reads only the committed `artifacts/`, never the raw exports.
 
 ## Setup
 
@@ -65,7 +67,7 @@ Fill in *N*, *D* and *M* from the printed summary.
 
 ## B2: feature contract
 
-[`docs/feature-contract.md`](docs/feature-contract.md) (v2) fixes the 12 inputs of the Global XGBoost next-hour model, their order, missing-value rules and the ONNX signature. The Android app reproduces them exactly. [`datara_ml/features.py`](datara_ml/features.py) is the reference implementation:
+[`docs/feature-contract.md`](docs/feature-contract.md) (v4) fixes the 12 inputs of the Global XGBoost next-hour model, their order, missing-value rules and the ONNX signature. The Android app reproduces them exactly. [`datara_ml/features.py`](datara_ml/features.py) is the reference implementation:
 
 ```bash
 python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
@@ -83,13 +85,15 @@ python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usag
 python -m datara_ml.export_dev_model
 ```
 
-Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v3`) and `artifacts/golden_parity.json`. The app bundles both until the real model replaces them. To swap in a trained model, follow "Swapping in a trained model" in the contract.
+Trains a tiny model on **synthetic** data and writes `artifacts/global_xgboost.onnx` (`model_version` `dev-synthetic-v3`) and `artifacts/golden_parity.json`. It was the app's stand-in before the first trained model; the app now bundles `final-2026-11-17`. To swap in a trained model, follow "Swapping in a trained model" in the contract.
 
-## Training the Global model (v0 now, final on Nov 11)
+## Training the Global model
+
+Name each export by its date and keep the older ones, so every model can be rebuilt from its own data. The final model was built with:
 
 ```bash
-python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
-python -m datara_ml.train_v0 --train data/train.csv --apps data/app_usage_records.csv --usage data/usage_records.csv --model-version final-2026-11-11
+python -m datara_ml.features --apps data/app_usage_records_2026-11-17.csv --usage data/usage_records_2026-11-17.csv --out data/train_2026-11-17.csv
+python -m datara_ml.train_v0 --train data/train_2026-11-17.csv --apps data/app_usage_records_2026-11-17.csv --usage data/usage_records_2026-11-17.csv --model-version final-2026-11-17
 ```
 
 Trains with the **Tweedie objective on raw next-hour bytes** (it predicts the mean usage of an hour), tunes `tweedie_variance_power`, `max_depth` and `n_estimators` by **nested** 5-fold cross-validation grouped by device (the reported scores were never used for tuning), choosing by **PET error** on B4's simulated quota cycles (see "B4/E3 evaluation"; next-hour RMSE only if `--apps`/`--usage` are left out), compares it with two naive baselines on the same rows, and exports `artifacts/global_xgboost.onnx` (`output_transform = identity`), the parity fixture and `artifacts/v0_report.json` (aggregate metrics only). `--objective log1p_smear` trains the fallback: squared error on log1p with one smearing factor. Takes about 2 minutes.
@@ -123,15 +127,13 @@ The bundled `v0-tweedie-pet-2026-11-07` (contract v4, second 2026-11-06 export, 
 
 **Which simulated cycles count.** Usage is added up hour by hour from the start hour. Hours inside NSM windows longer than 2 hours are unobserved, but the window's total is known, so they add their share of it and the running total is exact again at the window's end. A cycle is scored only when the crossing falls in an **observed** hour. It is skipped, and counted by reason in the report, when the crossing falls in an unobserved hour, an hour on the way has no NSM total at all, or the data ends first. A projection that never reaches the quota within 30 days is scored as start + 720 h (late).
 
-Run it for the final model (Nov 11 rehearsal, Nov 12 final), **after** the two training commands above (same exports in `data/`):
+Run it **after** the two training commands above, with the same exports:
 
 ```bash
-python -m datara_ml.features --apps data/app_usage_records.csv --usage data/usage_records.csv --out data/train.csv
-python -m datara_ml.train_v0 --train data/train.csv --apps data/app_usage_records.csv --usage data/usage_records.csv --model-version final-2026-11-11
-python -m datara_ml.evaluate --apps data/app_usage_records.csv --usage data/usage_records.csv --train data/train.csv
+python -m datara_ml.evaluate --apps data/app_usage_records_2026-11-17.csv --usage data/usage_records_2026-11-17.csv --train data/train_2026-11-17.csv
 ```
 
-Training takes about 2 minutes and the evaluation about 5 (more with more data). Hyperparameters are chosen by PET error in both, with every 3rd start hour scored (`PET_TUNE_STRIDE`). The evaluation writes to `artifacts/eval/`: `report.json` (every number), `report.md` (the Chapter 4 tables) and the figures `next_hour_error.png`, `pet_mae_by_quota.png`, `pet_signed_error.png`, `pet_projected_vs_actual.png`, `alert_confusion.png` (Global confusion matrices), `alert_scores.png` (precision / recall / F1 per method) and `feature_importance.png`. Devices appear only as D01, D02, … (in order of their first hour), so these files may be committed. `--train` only checks that `data/train.csv` was built from the same exports. For a quick run without tuning, pass `--fixed-params '{"tweedie_variance_power": 1.9, "max_depth": 2, "n_estimators": 150}'`.
+Training takes about 2 minutes and the evaluation about 5 (more with more data). Hyperparameters are chosen by PET error in both, with every 3rd start hour scored (`PET_TUNE_STRIDE`). The evaluation writes to `artifacts/eval/`: `report.json` (every number), `report.md` (the Chapter 4 tables) and the figures `next_hour_error.png`, `pet_mae_by_quota.png`, `pet_signed_error.png`, `pet_projected_vs_actual.png`, `alert_confusion.png` (Global confusion matrices), `alert_scores.png` (precision / recall / F1 per method) and `feature_importance.png`. Devices appear only as D01, D02, … (in order of their first hour), so these files may be committed. `--train` only checks that the training set was built from the same exports. For a quick run without tuning, pass `--fixed-params '{"tweedie_variance_power": 1.9, "max_depth": 2, "n_estimators": 150}'`.
 
 **Final result (2026-11-17 export, 2,672 hours, 20 devices; `artifacts/eval/`, model `final-2026-11-17`, the defense model).** Chosen power 1.5, depth 2, 150 trees. PET error is over 3,518 scored cycles from 15 devices (all quotas). Positive bias means late. Timings: features 2 s, training 1 min 47 s, evaluation 4 min 32 s, unit tests 26 s.
 
@@ -146,7 +148,7 @@ Training takes about 2 minutes and the evaluation about 5 (more with more data).
 
 **E3 (final).** 6 of 20 devices learned ≥ 168 hours; 3 switched to Local (309 measured hours shown Local). Where the local layer was ready (2,230 hours) it was not better than Global (next-hour MAE 43.8 vs 41.6 MB; PET MAE 11.4 vs 10.5 h); what users saw with the switch matched Global (PET MAE 10.1 vs 10.2 h).
 
-**Rehearsal result (2026-11-11 export, 1,711 hours, 19 devices; `artifacts/eval/`, model `rehearsal-2026-11-11`, the fallback for the Nov 12 final model).** Chosen power 1.5, depth 2, 150 trees. PET error is over 2,595 scored cycles from 15 devices (all quotas). Positive bias means late. Timings on the lead's laptop: features 2 s, training 1 min 37 s, evaluation 7 min 8 s, unit tests 56 s.
+**Rehearsal result (2026-11-11 export, 1,711 hours, 19 devices; model `rehearsal-2026-11-11`, the fallback before the final model).** Chosen power 1.5, depth 2, 150 trees. PET error is over 2,595 scored cycles from 15 devices (all quotas). Positive bias means late. Timings on the lead's laptop: features 2 s, training 1 min 37 s, evaluation 7 min 8 s, unit tests 56 s.
 
 | | Next-hour MAE (MB) | PET MAE (h) | Median (h) | Within ±24 h | Bias (h) | Beyond 30 d |
 |---|---|---|---|---|---|---|
@@ -159,7 +161,7 @@ Training takes about 2 minutes and the evaluation about 5 (more with more data).
 
 **E3 (rehearsal).** 3 of 19 devices learned ≥ 168 hours; 1 switched to Local (20 measured hours shown Local). On the 1,302 hours where the local layer was ready, it was worse than Global (next-hour MAE 45.1 vs 41.6 MB; PET MAE 14.5 vs 14.3 h), so the switch rule correctly kept Global on all but one device.
 
-**Earlier result (second 2026-11-06 export, 689 hours, 17 devices; `artifacts/eval/`).** PET error is over 1,367 scored cycles from 13 devices (all quotas). Positive bias means late.
+**Earlier result (historical: second 2026-11-06 export, 689 hours, 17 devices; model `v0-tweedie-pet-2026-11-07`).** PET error is over 1,367 scored cycles from 13 devices (all quotas). Positive bias means late.
 
 | | Next-hour MAE (MB) | PET MAE (h) | Median (h) | Within ±24 h | Bias (h) | Beyond 30 d |
 |---|---|---|---|---|---|---|
@@ -172,8 +174,8 @@ Training takes about 2 minutes and the evaluation about 5 (more with more data).
 
 **Forecast alerts (same run, nested, all quotas).** Within 24 h: 1,856 labelled starts, precision 0.75, recall 0.93, F1 0.83 (TP 1,093, FP 363, FN 82, TN 318); the 24 h average baseline also reaches F1 0.83 with higher precision (0.84) and lower recall (0.82). Within 3 h: 2,458 starts, precision 0.57, recall 0.73, F1 0.64, against F1 0.71 for the 24 h average. The model warns early, in line with its negative PET bias: few missed warnings, more false alarms. Its clear advantage stays the PET error.
 
-Read the table with these in mind:
+Read that table with these in mind (they describe the Nov 6 run):
 
 - **Use the nested row (15.6 h) as the unbiased number.** The shipped settings were chosen on the same devices they are scored on, so 13.8 h is slightly optimistic.
 - **The PET-selected model errs early:** on average its PET comes about 10 h before the real one, and more for big quotas (−42 h at 3 GB). Early is the safer direction for a warning, but the error still grows with the quota (MAE 3 h at 100 MB, 50 h at 3 GB).
-- **E3 cannot be shown yet.** No device has 168 measured hours, so the switch to Local never happens. Where the local layer was ready (≥ 24 learned hours, 9 devices), it ran in the background. Compared with Global on the same rows, it was worse one hour ahead (MAE 57.7 vs 50.4 MB) and about equal on PET (MAE 17.6 vs 18.2 h). The new collection (from about 2026-10-30) should give some devices a full week.
+- **E3 could not be shown then.** No device had 168 measured hours yet, so the switch to Local never happened (the final result above has 6 such devices). Where the local layer was ready (≥ 24 learned hours, 9 devices), it ran in the background. Compared with Global on the same rows, it was worse one hour ahead (MAE 57.7 vs 50.4 MB) and about equal on PET (MAE 17.6 vs 18.2 h).
