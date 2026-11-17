@@ -6,7 +6,8 @@
 
 | Method | MAE (MB) | RMSE (MB) | R² | R² (log) | Predicted ÷ actual total |
 |---|---|---|---|---|---|
-| Global Tweedie model | 46.0 | 114.1 | 0.29 | -0.42 | 0.90 |
+| Global XGBoost (Tweedie) | 46.0 | 114.1 | 0.29 | -0.42 | 0.90 |
+| Linear regression | 59.5 | 123.9 | 0.17 | 0.04 | 1.09 |
 | Last hour | 48.3 | 135.3 | 0.01 | 0.71 | 0.99 |
 | Average of last 24 h | 56.2 | 122.3 | 0.19 | 0.04 | 1.10 |
 | Same hour yesterday | 68.1 | 161.1 | -0.41 | 0.06 | 1.18 |
@@ -19,36 +20,41 @@ Error = projected − actual PET in hours; positive = late. Cycles start at ever
 
 | Quota | Method | Cycles | Devices | MAE (h) | Median abs (h) | Within ±3 h | Within ±24 h | Bias (h) | Late | Beyond 30 d |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 100 MB | Global Tweedie model | 1393 | 14 | 5.7 | 1.2 | 68% | 93% | -4.8 | 39% | 0 |
+| 100 MB | Global XGBoost (Tweedie) | 1393 | 14 | 5.7 | 1.2 | 68% | 93% | -4.8 | 39% | 0 |
+| 100 MB | Linear regression | 1393 | 14 | 22.2 | 1.2 | 63% | 91% | 11.5 | 35% | 32 |
 | 100 MB | Last hour | 1393 | 14 | 225.3 | 4.5 | 45% | 63% | 223.2 | 70% | 428 |
 | 100 MB | Average of last 24 h | 1393 | 14 | 64.6 | 1.8 | 60% | 84% | 58.0 | 52% | 111 |
 | 100 MB | Same hour yesterday | 1393 | 14 | 65.1 | 2.2 | 56% | 84% | 58.8 | 54% | 111 |
-| 500 MB | Global Tweedie model | 1016 | 14 | 9.8 | 4.9 | 39% | 88% | -5.9 | 46% | 0 |
+| 500 MB | Global XGBoost (Tweedie) | 1016 | 14 | 9.8 | 4.9 | 39% | 88% | -5.9 | 46% | 0 |
+| 500 MB | Linear regression | 1016 | 14 | 33.0 | 4.3 | 40% | 81% | 13.6 | 39% | 32 |
 | 500 MB | Last hour | 1016 | 14 | 268.8 | 25.1 | 26% | 50% | 263.9 | 75% | 367 |
 | 500 MB | Average of last 24 h | 1016 | 14 | 86.7 | 8.4 | 31% | 71% | 76.1 | 57% | 94 |
 | 500 MB | Same hour yesterday | 1016 | 14 | 87.1 | 9.7 | 30% | 70% | 75.6 | 56% | 94 |
-| 1 GB | Global Tweedie model | 736 | 14 | 12.7 | 8.0 | 22% | 84% | -6.4 | 42% | 0 |
+| 1 GB | Global XGBoost (Tweedie) | 736 | 14 | 12.7 | 8.0 | 22% | 84% | -6.4 | 42% | 0 |
+| 1 GB | Linear regression | 736 | 14 | 43.9 | 8.2 | 21% | 72% | 16.3 | 34% | 31 |
 | 1 GB | Last hour | 736 | 14 | 285.5 | 43.8 | 16% | 43% | 278.3 | 74% | 278 |
 | 1 GB | Average of last 24 h | 736 | 14 | 100.4 | 12.8 | 21% | 65% | 88.7 | 61% | 87 |
 | 1 GB | Same hour yesterday | 736 | 14 | 100.7 | 13.4 | 21% | 64% | 88.5 | 60% | 87 |
-| 3 GB | Global Tweedie model | 373 | 10 | 23.2 | 17.8 | 13% | 61% | -11.1 | 43% | 0 |
+| 3 GB | Global XGBoost (Tweedie) | 373 | 10 | 23.2 | 17.8 | 13% | 61% | -11.1 | 43% | 0 |
+| 3 GB | Linear regression | 373 | 10 | 31.4 | 20.0 | 7% | 60% | -27.7 | 18% | 0 |
 | 3 GB | Last hour | 373 | 10 | 312.7 | 142.8 | 5% | 26% | 295.6 | 72% | 155 |
 | 3 GB | Average of last 24 h | 373 | 10 | 73.7 | 21.7 | 9% | 54% | 50.6 | 54% | 16 |
 | 3 GB | Same hour yesterday | 373 | 10 | 73.7 | 22.7 | 9% | 54% | 50.1 | 52% | 16 |
-| All | Global Tweedie model | 3518 | 15 | 10.2 | 4.0 | 44% | 86% | -6.1 | 42% | 0 |
+| All | Global XGBoost (Tweedie) | 3518 | 15 | 10.2 | 4.0 | 44% | 86% | -6.1 | 42% | 0 |
+| All | Linear regression | 3518 | 15 | 30.8 | 4.5 | 42% | 81% | 9.0 | 34% | 95 |
 | All | Last hour | 3518 | 15 | 259.7 | 21.7 | 29% | 51% | 254.2 | 72% | 1228 |
 | All | Average of last 24 h | 3518 | 15 | 79.4 | 6.1 | 38% | 73% | 68.8 | 56% | 308 |
 | All | Same hour yesterday | 3518 | 15 | 79.8 | 6.8 | 36% | 73% | 68.9 | 56% | 308 |
 
 Device-averaged MAE (each device weighs the same, since heavy users give more cycles):
 
-| Quota | Global Tweedie model | Last hour | Average of last 24 h | Same hour yesterday |
-|---|---|---|---|---|
-| 100 MB | 3.5 | 132.3 | 37.4 | 37.8 |
-| 500 MB | 7.0 | 157.1 | 52.1 | 52.4 |
-| 1 GB | 10.4 | 155.4 | 75.3 | 75.6 |
-| 3 GB | 23.7 | 159.2 | 44.9 | 45.3 |
-| All | 8.5 | 183.7 | 87.2 | 87.5 |
+| Quota | Global XGBoost (Tweedie) | Linear regression | Last hour | Average of last 24 h | Same hour yesterday |
+|---|---|---|---|---|---|
+| 100 MB | 3.5 | 9.3 | 132.3 | 37.4 | 37.8 |
+| 500 MB | 7.0 | 13.8 | 157.1 | 52.1 | 52.4 |
+| 1 GB | 10.4 | 18.5 | 155.4 | 75.3 | 75.6 |
+| 3 GB | 23.7 | 26.4 | 159.2 | 44.9 | 45.3 |
+| All | 8.5 | 14.7 | 183.7 | 87.2 | 87.5 |
 
 ### Sensitivity: the final model's hyperparameters in every fold
 
@@ -77,14 +83,14 @@ Devices that learned ≥ 168 hours (the switch's minimum): **6** of 20; local la
 
 | Next hour | Hours | MAE (MB) | RMSE (MB) | Predicted ÷ actual total |
 |---|---|---|---|---|
-| Global Tweedie model | 2672 | 46.0 | 114.1 | 0.90 |
+| Global XGBoost (Tweedie) | 2672 | 46.0 | 114.1 | 0.90 |
 | Local layer (as switched) | 2672 | 46.6 | 114.8 | 0.92 |
 | Global, same rows/cycles | 2230 | 41.6 | 98.7 | 0.90 |
 | Local layer (shadow, when ready) | 2230 | 43.8 | 101.2 | 1.03 |
 
 | PET, all quotas | Cycles | MAE (h) | Median abs (h) | Within ±24 h | Bias (h) |
 |---|---|---|---|---|---|
-| Global Tweedie model | 3518 | 10.2 | 4.0 | 86% | -6.1 |
+| Global XGBoost (Tweedie) | 3518 | 10.2 | 4.0 | 86% | -6.1 |
 | Local layer (as switched) | 3518 | 10.1 | 3.9 | 86% | -6.7 |
 | Global, same rows/cycles | 2895 | 10.5 | 4.7 | 87% | -5.8 |
 | Local layer (shadow, when ready) | 2895 | 11.4 | 5.3 | 86% | -6.6 |
@@ -104,23 +110,28 @@ Confusion matrix, Global model:
 
 | Quota | Method | Starts | Positives | Precision | Recall | F1 | Accuracy | Specificity |
 |---|---|---|---|---|---|---|---|---|
-| 100 MB | Global Tweedie model | 1985 | 70% | 0.70 | 1.00 | 0.83 | 0.70 | 0.00 |
+| 100 MB | Global XGBoost (Tweedie) | 1985 | 70% | 0.70 | 1.00 | 0.83 | 0.70 | 0.00 |
+| 100 MB | Linear regression | 1985 | 70% | 0.77 | 0.98 | 0.86 | 0.77 | 0.29 |
 | 100 MB | Last hour | 1985 | 70% | 0.96 | 0.66 | 0.78 | 0.74 | 0.94 |
 | 100 MB | Average of last 24 h | 1985 | 70% | 0.89 | 0.90 | 0.90 | 0.85 | 0.73 |
 | 100 MB | Same hour yesterday | 1985 | 70% | 0.89 | 0.90 | 0.90 | 0.85 | 0.73 |
-| 500 MB | Global Tweedie model | 1683 | 54% | 0.54 | 0.97 | 0.69 | 0.54 | 0.02 |
+| 500 MB | Global XGBoost (Tweedie) | 1683 | 54% | 0.54 | 0.97 | 0.69 | 0.54 | 0.02 |
+| 500 MB | Linear regression | 1683 | 54% | 0.60 | 0.97 | 0.74 | 0.64 | 0.24 |
 | 500 MB | Last hour | 1683 | 54% | 0.87 | 0.57 | 0.69 | 0.72 | 0.90 |
 | 500 MB | Average of last 24 h | 1683 | 54% | 0.76 | 0.81 | 0.78 | 0.76 | 0.70 |
 | 500 MB | Same hour yesterday | 1683 | 54% | 0.76 | 0.81 | 0.78 | 0.76 | 0.70 |
-| 1 GB | Global Tweedie model | 1509 | 38% | 0.52 | 0.90 | 0.66 | 0.65 | 0.49 |
+| 1 GB | Global XGBoost (Tweedie) | 1509 | 38% | 0.52 | 0.90 | 0.66 | 0.65 | 0.49 |
+| 1 GB | Linear regression | 1509 | 38% | 0.44 | 0.99 | 0.61 | 0.53 | 0.25 |
 | 1 GB | Last hour | 1509 | 38% | 0.75 | 0.55 | 0.63 | 0.76 | 0.89 |
 | 1 GB | Average of last 24 h | 1509 | 38% | 0.69 | 0.73 | 0.71 | 0.78 | 0.80 |
 | 1 GB | Same hour yesterday | 1509 | 38% | 0.69 | 0.73 | 0.71 | 0.78 | 0.80 |
-| 3 GB | Global Tweedie model | 1449 | 5% | 0.24 | 0.61 | 0.34 | 0.88 | 0.89 |
+| 3 GB | Global XGBoost (Tweedie) | 1449 | 5% | 0.24 | 0.61 | 0.34 | 0.88 | 0.89 |
+| 3 GB | Linear regression | 1449 | 5% | 0.09 | 0.22 | 0.12 | 0.83 | 0.87 |
 | 3 GB | Last hour | 1449 | 5% | 0.24 | 0.53 | 0.33 | 0.89 | 0.91 |
 | 3 GB | Average of last 24 h | 1449 | 5% | 0.33 | 0.70 | 0.45 | 0.91 | 0.92 |
 | 3 GB | Same hour yesterday | 1449 | 5% | 0.33 | 0.70 | 0.45 | 0.91 | 0.92 |
-| All | Global Tweedie model | 6626 | 45% | 0.59 | 0.96 | 0.73 | 0.69 | 0.46 |
+| All | Global XGBoost (Tweedie) | 6626 | 45% | 0.59 | 0.96 | 0.73 | 0.69 | 0.46 |
+| All | Linear regression | 6626 | 45% | 0.60 | 0.96 | 0.74 | 0.70 | 0.49 |
 | All | Last hour | 6626 | 45% | 0.84 | 0.61 | 0.70 | 0.77 | 0.91 |
 | All | Average of last 24 h | 6626 | 45% | 0.78 | 0.84 | 0.81 | 0.82 | 0.81 |
 | All | Same hour yesterday | 6626 | 45% | 0.78 | 0.84 | 0.81 | 0.82 | 0.81 |
@@ -136,23 +147,28 @@ Confusion matrix, Global model:
 
 | Quota | Method | Starts | Positives | Precision | Recall | F1 | Accuracy | Specificity |
 |---|---|---|---|---|---|---|---|---|
-| 100 MB | Global Tweedie model | 2453 | 32% | 0.61 | 0.90 | 0.73 | 0.79 | 0.74 |
+| 100 MB | Global XGBoost (Tweedie) | 2453 | 32% | 0.61 | 0.90 | 0.73 | 0.79 | 0.74 |
+| 100 MB | Linear regression | 2453 | 32% | 0.43 | 0.97 | 0.60 | 0.58 | 0.40 |
 | 100 MB | Last hour | 2453 | 32% | 0.78 | 0.70 | 0.74 | 0.84 | 0.91 |
 | 100 MB | Average of last 24 h | 2453 | 32% | 0.60 | 0.82 | 0.69 | 0.77 | 0.74 |
 | 100 MB | Same hour yesterday | 2453 | 32% | 0.59 | 0.71 | 0.65 | 0.75 | 0.77 |
-| 500 MB | Global Tweedie model | 2394 | 10% | 0.46 | 0.43 | 0.44 | 0.90 | 0.95 |
+| 500 MB | Global XGBoost (Tweedie) | 2394 | 10% | 0.46 | 0.43 | 0.44 | 0.90 | 0.95 |
+| 500 MB | Linear regression | 2394 | 10% | 0.06 | 0.02 | 0.03 | 0.88 | 0.97 |
 | 500 MB | Last hour | 2394 | 10% | 0.46 | 0.49 | 0.47 | 0.90 | 0.94 |
 | 500 MB | Average of last 24 h | 2394 | 10% | 0.52 | 0.52 | 0.52 | 0.91 | 0.95 |
 | 500 MB | Same hour yesterday | 2394 | 10% | 0.41 | 0.52 | 0.46 | 0.88 | 0.92 |
-| 1 GB | Global Tweedie model | 2394 | 3% | 0.33 | 0.02 | 0.03 | 0.97 | 1.00 |
+| 1 GB | Global XGBoost (Tweedie) | 2394 | 3% | 0.33 | 0.02 | 0.03 | 0.97 | 1.00 |
+| 1 GB | Linear regression | 2394 | 3% | – | 0.00 | – | 0.97 | 1.00 |
 | 1 GB | Last hour | 2394 | 3% | 0.24 | 0.30 | 0.26 | 0.96 | 0.98 |
 | 1 GB | Average of last 24 h | 2394 | 3% | 0.29 | 0.32 | 0.30 | 0.96 | 0.98 |
 | 1 GB | Same hour yesterday | 2394 | 3% | 0.25 | 0.30 | 0.27 | 0.96 | 0.98 |
-| 3 GB | Global Tweedie model | 2422 | 0% | – | – | – | 1.00 | 1.00 |
+| 3 GB | Global XGBoost (Tweedie) | 2422 | 0% | – | – | – | 1.00 | 1.00 |
+| 3 GB | Linear regression | 2422 | 0% | – | – | – | 1.00 | 1.00 |
 | 3 GB | Last hour | 2422 | 0% | 0.00 | – | – | 1.00 | 1.00 |
 | 3 GB | Average of last 24 h | 2422 | 0% | – | – | – | 1.00 | 1.00 |
 | 3 GB | Same hour yesterday | 2422 | 0% | 0.00 | – | – | 1.00 | 1.00 |
-| All | Global Tweedie model | 9663 | 11% | 0.59 | 0.75 | 0.66 | 0.91 | 0.93 |
+| All | Global XGBoost (Tweedie) | 9663 | 11% | 0.59 | 0.75 | 0.66 | 0.91 | 0.93 |
+| All | Linear regression | 9663 | 11% | 0.42 | 0.71 | 0.53 | 0.86 | 0.88 |
 | All | Last hour | 9663 | 11% | 0.66 | 0.63 | 0.65 | 0.92 | 0.96 |
 | All | Average of last 24 h | 9663 | 11% | 0.57 | 0.73 | 0.64 | 0.91 | 0.93 |
 | All | Same hour yesterday | 9663 | 11% | 0.53 | 0.64 | 0.58 | 0.90 | 0.93 |

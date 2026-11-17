@@ -161,6 +161,36 @@ class ProjectionTest(unittest.TestCase):
         self.assertEqual([rep(np.array([3.0])), rep(np.array([8.0]))], [3.0, 3.0])
 
 
+class LinearModelTest(unittest.TestCase):
+    """The linear regression the Global model is compared with."""
+
+    def test_recovers_a_linear_relationship(self):
+        rng = np.random.default_rng(0)
+        x = rng.normal(size=(200, 12))
+        y = 5e6 + 2e6 * x[:, 4] - 1e6 * x[:, 9]
+        m = ev.LinearModel.fit(x, y)
+        np.testing.assert_allclose(m.predict(x), np.maximum(0, y), rtol=1e-6, atol=1)
+        self.assertEqual(len(m.missing_cols), 0)
+
+    def test_missing_values_use_the_training_median_and_a_flag(self):
+        x = np.zeros((6, 12))
+        x[:, 4] = [1, 2, 3, 4, 5, 6]
+        x[[0, 1, 2], 8] = np.nan          # "same hour last week" missing on half the rows
+        x[[3, 4, 5], 8] = [7, 8, 9]
+        y = 1e6 * x[:, 4] + np.where(np.isnan(x[:, 8]), 3e6, 0.0)
+        m = ev.LinearModel.fit(x, y)
+        self.assertEqual(list(m.missing_cols), [8])
+        self.assertEqual(m.medians[8], 8.0)
+        np.testing.assert_allclose(m.predict(x), y, rtol=1e-6, atol=1)
+        self.assertTrue(np.isfinite(m.predict(np.full((1, 12), np.nan))).all())
+
+    def test_predictions_are_clipped_at_zero(self):
+        x = np.arange(24, dtype=float).reshape(2, 12)
+        m = ev.LinearModel.fit(np.vstack([x, x + 1]), np.array([0.0, 0.0, 1e6, 1e6]))
+        self.assertGreaterEqual(float(m.predict(-100 * np.ones((1, 12)))[0]), 0.0)
+        self.assertIsInstance(m.predictor()(x[0]), float)
+
+
 class LocalLayerTest(unittest.TestCase):
     """The port of LocalLayer.kt / ModelSwitch."""
 
