@@ -133,6 +133,19 @@ python -m datara_ml.evaluate --apps data/app_usage_records.csv --usage data/usag
 
 Training takes about 2 minutes and the evaluation about 5 (more with more data). Hyperparameters are chosen by PET error in both, with every 3rd start hour scored (`PET_TUNE_STRIDE`). The evaluation writes to `artifacts/eval/`: `report.json` (every number), `report.md` (the Chapter 4 tables) and the figures `next_hour_error.png`, `pet_mae_by_quota.png`, `pet_signed_error.png`, `pet_projected_vs_actual.png`, `alert_confusion.png` (Global confusion matrices), `alert_scores.png` (precision / recall / F1 per method) and `feature_importance.png`. Devices appear only as D01, D02, … (in order of their first hour), so these files may be committed. `--train` only checks that `data/train.csv` was built from the same exports. For a quick run without tuning, pass `--fixed-params '{"tweedie_variance_power": 1.9, "max_depth": 2, "n_estimators": 150}'`.
 
+**Final result (2026-11-17 export, 2,672 hours, 20 devices; `artifacts/eval/`, model `final-2026-11-17`, the defense model).** Chosen power 1.5, depth 2, 150 trees. PET error is over 3,518 scored cycles from 15 devices (all quotas). Positive bias means late. Timings: features 2 s, training 1 min 47 s, evaluation 4 min 32 s, unit tests 26 s.
+
+| | Next-hour MAE (MB) | PET MAE (h) | Median (h) | Within ±24 h | Bias (h) | Beyond 30 d |
+|---|---|---|---|---|---|---|
+| **Shipped model** (power 1.5, PET-selected), fixed in every fold | 45.8 | **10.4** | 4.0 | 87% | −7.4 | 0 |
+| PET selection, nested (each fold tunes its own) | 46.0 | 10.2 | 4.0 | 86% | −6.1 | 0 |
+| Baseline: average of last 24 h, repeated | 56.2 | 79.4 | 6.1 | 73% | +68.8 | 308 |
+| Baseline: last hour, repeated | 48.3 | 259.7 | 21.7 | 51% | +254.2 | 1,228 |
+
+**Forecast alerts (final, nested, all quotas).** Within 24 h: 6,626 labelled starts, precision 0.59, recall 0.96, F1 0.73 (TP 2,842, FP 1,972, FN 111, TN 1,701), against F1 0.81 for the 24 h average. Within 3 h: 9,663 starts, precision 0.59, recall 0.75, F1 0.66, against 0.64 for the 24 h average. The model rarely misses a warning but warns early (more false alarms), most of all for small quotas.
+
+**E3 (final).** 6 of 20 devices learned ≥ 168 hours; 3 switched to Local (309 measured hours shown Local). Where the local layer was ready (2,230 hours) it was not better than Global (next-hour MAE 43.8 vs 41.6 MB; PET MAE 11.4 vs 10.5 h); what users saw with the switch matched Global (PET MAE 10.1 vs 10.2 h).
+
 **Rehearsal result (2026-11-11 export, 1,711 hours, 19 devices; `artifacts/eval/`, model `rehearsal-2026-11-11`, the fallback for the Nov 12 final model).** Chosen power 1.5, depth 2, 150 trees. PET error is over 2,595 scored cycles from 15 devices (all quotas). Positive bias means late. Timings on the lead's laptop: features 2 s, training 1 min 37 s, evaluation 7 min 8 s, unit tests 56 s.
 
 | | Next-hour MAE (MB) | PET MAE (h) | Median (h) | Within ±24 h | Bias (h) | Beyond 30 d |
